@@ -1,0 +1,6 @@
+{
+  "crons": [
+    { "path": "/api/sync-injuries", "schedule": "0 16 * * *" },
+    { "path": "/api/sync-ratings", "schedule": "0 12 * * 5" }
+  ]
+}
