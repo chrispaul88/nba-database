@@ -778,14 +778,14 @@ function CheatSheet({ games, teams, players, onSelect }) {
   useEffect(() => {
     if (!slateKey) { setData({ players: [] }); return; }
     let alive = true; setData(null);
-    fetch("/api/season-stats?logs=30&teams=" + encodeURIComponent(slateKey))
+    fetch("/api/season-stats?logs=season&teams=" + encodeURIComponent(slateKey))
       .then((r) => r.ok ? r.json() : r.text().then((t) => ({ error: "HTTP " + r.status + (/timeout|FUNCTION_INVOCATION/i.test(t) ? " (timed out)" : "") })))
       .then((d) => alive && setData(d && d.players ? d : { players: [], error: d?.error || "No data returned" }))
       .catch((e) => alive && setData({ players: [], error: String(e.message || e) }));
     return () => { alive = false; };
   }, [slateKey]);
   const slotOf = (ab) => slate.find((x) => sameAbbr(x.ab, ab));
-  if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading the last 30 days of box scores for tonight's teams…</div>;
+  if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading this season's box scores for these teams… (10–20 seconds the first time)</div>;
   if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
   const val = (gm) => (stat === "pra" ? gm.pts + gm.reb + gm.ast : gm[stat]);
   const rows = [];
@@ -812,7 +812,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
         {Object.keys(CS_LINES).map((k) => <button key={k} onClick={() => setStat(k)} className={"flex-1 py-1.5 rounded-full text-[10px] font-extrabold border " + (stat === k ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{k === "pra" ? "P+R+A" : CS_LABEL[k]}</button>)}
       </div>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Consistency · last {data.days} days</span>
+        <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Consistency · season</span>
         <span className="flex gap-1">{[70, 80, 90].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2 py-0.5 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%+</button>)}</span>
       </div>
       <div className="text-[10px] text-slate-400 mb-3 px-1">Each row: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of his games, then the next line up so you can see where it drops. Last 5 games on the right, oldest → newest. Players who are Out are hidden.</div>
@@ -839,7 +839,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
             </button>
           );
         })}
-        {rows.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">{upcoming.length === 0 ? "No games left on this day." : `No one clears a ${CS_LABEL[stat]} line at ${floor}% yet. Read ${data.games ?? 0} games for ${data.players.length} players.`}</div>}
+        {rows.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">{upcoming.length === 0 ? "No games left on this day." : `Nothing to show. Checked ${data.scanned ?? 0} games since ${data.from ? new Date(data.from).toLocaleDateString([], { month: "short", day: "numeric" }) : "?"}, read ${data.games ?? 0} box scores, found ${data.players.length} players; ${slate.length} teams on this slate.`}</div>}
       </div>
     </div>
   );
