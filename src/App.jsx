@@ -788,6 +788,19 @@ function CheatSheet({ games, teams, players, onSelect }) {
   if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading this season's box scores for these teams… (10–20 seconds the first time)</div>;
   if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
   const val = (gm) => (stat === "pra" ? gm.pts + gm.reb + gm.ast : gm[stat]);
+  // What tonight's opponent gives up in this stat, ranked against the league (1 = allows the most)
+  const TL = LIVE_STATS.teams || {};
+  const allowedOf = (t) => (!t ? null : stat === "pts" ? t.oppPts : stat === "reb" ? t.oppReb : stat === "ast" ? t.oppAst : stat === "p3m" ? t.opp3pm : (t.oppPts != null && t.oppReb != null && t.oppAst != null ? t.oppPts + t.oppReb + t.oppAst : null));
+  const leagueAllowed = Object.values(TL).filter((t) => t.gp > 0).map(allowedOf).filter((v) => v != null && v > 0);
+  const oppLine = (ab) => TL[modernAbbr(ab)] || Object.entries(TL).find(([k]) => sameAbbr(k, ab))?.[1] || null;
+  const spotOf = (oppAb) => {
+    const v = allowedOf(oppLine(oppAb)); if (v == null || !(v > 0) || leagueAllowed.length < 10) return null;
+    const rank = leagueAllowed.filter((x) => x > v).length + 1, n = leagueAllowed.length;
+    const tier = rank <= 8 ? "great" : rank > n - 8 ? "tough" : "neutral";
+    const what = stat === "p3m" ? "threes" : stat === "pra" ? "PTS+REB+AST" : CS_LABEL[stat].toLowerCase() === "pts" ? "points" : stat === "reb" ? "rebounds" : "assists";
+    const note = rank === 1 ? `gives up the most ${what} in the league` : rank === n ? `gives up the fewest ${what} in the league` : rank <= 8 ? `${ordinal(rank)}-most ${what} allowed` : rank > n - 8 ? `${ordinal(n - rank + 1)}-fewest ${what} allowed` : `${ordinal(rank)} in ${what} allowed`;
+    return { v, rank, tier, note };
+  };
   const rows = [];
   for (const rec of data.players) {
     const slot = slotOf(rec.team); if (!slot) continue;
@@ -801,7 +814,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
     if (!best) continue;
     const next = rates[rates.indexOf(best) + 1] || null;
     const recent = vals.slice(-5);
-    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home });
+    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home, spot: spotOf(slot.opp) });
   }
   // best lines first; ties broken by how reliable the next line still is
   rows.sort((a, b) => b.best.L - a.best.L || (b.next?.pct ?? 0) - (a.next?.pct ?? 0) || b.avg - a.avg);
@@ -815,7 +828,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
         <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Consistency · season</span>
         <span className="flex gap-1">{[70, 80, 90].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2 py-0.5 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%+</button>)}</span>
       </div>
-      <div className="text-[10px] text-slate-400 mb-3 px-1">Each row: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of his games, then the next line up so you can see where it drops. Last 5 games on the right, oldest → newest. Players who are Out are hidden.</div>
+      <div className="text-[10px] text-slate-400 mb-3 px-1">Green chip: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of games, then the next line up. The tag under his name is tonight's matchup: how much the opponent gives up in this stat versus the league. Tiles on the right are his last 5 games.</div>
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
         {rows.slice(0, 40).map((r, i) => {
           const ab = r.rec.team;
@@ -827,14 +840,17 @@ function CheatSheet({ games, teams, players, onSelect }) {
                   <span className="text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
                   {r.p && isSidelined(r.p) && <StatusBadge status={effectiveStatus(r.p)} />}
                 </span>
-                <span className="block text-[10px] text-slate-500 dark:text-slate-400">{ab} {r.home ? "vs" : "@"} {r.opp} · {fmt1(r.avg)} avg · {fmt1(r.min)} min · {r.gp} GP</span>
-                <span className="flex items-center gap-1.5 mt-1">
-                  <span className={"px-1.5 py-0.5 rounded-md text-[10px] font-extrabold " + pctCls(r.best.pct)}>{r.best.L}+ {CS_LABEL[stat]} · {r.best.pct}%</span>
-                  {r.next && <span className={"px-1.5 py-0.5 rounded-md text-[10px] font-bold " + pctCls(r.next.pct)}>{r.next.L}+ · {r.next.pct}%</span>}
+                <span className="block text-[10px] text-slate-500 dark:text-slate-400 truncate">{ab} {r.home ? "vs" : "@"} {r.opp}{r.spot ? ` · ${r.opp} allows ${fmt1(r.spot.v)} ${stat === "pra" ? "P+R+A" : CS_LABEL[stat]}` : ""}</span>
+                {r.spot && <span className={"inline-block mt-1 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold " + (r.spot.tier === "great" ? "bg-green-100 text-green-700" : r.spot.tier === "tough" ? "bg-red-100 text-red-600" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300")}>{r.spot.tier === "great" ? "Great spot" : r.spot.tier === "tough" ? "Tough spot" : "Neutral"} · {r.opp} {r.spot.note}</span>}
+                <span className="flex items-center justify-between gap-2 mt-1.5">
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-extrabold whitespace-nowrap " + pctCls(r.best.pct)}>{r.best.L}+ {CS_LABEL[stat]} · {r.best.pct}%</span>
+                    {r.next && <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-bold whitespace-nowrap " + pctCls(r.next.pct)}>{r.next.L}+ · {r.next.pct}%</span>}
+                  </span>
+                  <span className="flex gap-0.5 shrink-0">
+                    {r.recent.map((v, k) => <span key={k} className={"w-5 h-5 rounded text-[8px] font-extrabold flex items-center justify-center " + (v >= r.best.L ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600")}>{v}</span>)}
+                  </span>
                 </span>
-              </span>
-              <span className="flex gap-0.5 shrink-0">
-                {r.recent.map((v, k) => <span key={k} className={"w-6 h-6 rounded-md text-[9px] font-extrabold flex items-center justify-center " + (v >= r.best.L ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600")}>{v}</span>)}
               </span>
             </button>
           );
@@ -845,77 +861,120 @@ function CheatSheet({ games, teams, players, onSelect }) {
   );
 }
 
-// ── Full court (pregame): away starters on top, home starters on the bottom,
-//    drawn with the home team's real floor (same renderer as the team court) ──
-function FullCourt({ game, teams, players, onSelect }) {
+// ── Matchup preview (pregame): Tale of the Tape + position-by-position Face-off ──
+function FaceOff({ game, teams, players, onSelect }) {
   const teamBy = (ab) => (teams || []).find((t) => sameAbbr(t.abbr || toAbbr(t.name), ab));
   const homeT = teamBy(game.home.abbr), awayT = teamBy(game.away.abbr);
   if (!homeT || !awayT) return null;
   const hAb = homeT.abbr || toAbbr(homeT.name), aAb = awayT.abbr || toAbbr(awayT.name);
+  const hc = teamColor(hAb), ac = teamColor(aAb);
   const hLu = lineupOf(rosterOf(homeT, players), hAb), aLu = lineupOf(rosterOf(awayT, players), aAb);
-  const th = courtTheme(hAb), color = teamColor(hAb);
-  const nick = homeT.name ? String(homeT.name).trim().split(" ").pop() : hAb;
-  const HALF = 47 + COURT_TOP_FT;                       // one half as the team view draws it (court + apron above the half line)
-  const TOTAL = 2 * 47;                                  // full playing surface
-  // vertical % for a slot: slot.y is % of the half-court view; convert to feet from the half line
-  const yFt = (slot) => ((slot.y / 100) * COURT_FT) - COURT_TOP_FT;
-  // guards and wings pulled toward half court, bigs kept near the paint, so the three rows stay clear of each other
-  const FACTOR = { PG: 0.85, SG: 0.72, SF: 0.72, PF: 0.86, C: 0.86 };
-  const posOf = (slot, top) => { const f = yFt(slot) * (FACTOR[slot.lbl] || 0.8); return { left: slot.x + "%", top: ((top ? 47 - f : 47 + f) / TOTAL) * 100 + "%" }; };
-  const Tag = ({ lu, ab, top }) => {
+  const L = LIVE_STATS.teams || {};
+  const line = (ab) => L[modernAbbr(ab)] || Object.entries(L).find(([k]) => sameAbbr(k, ab))?.[1] || null;
+  const hL = line(hAb), aL = line(aAb);
+  const made3 = (t) => (t && t.p3a != null && t.p3 != null ? (t.p3a * t.p3) / 100 : null);
+  // [label, away value, home value, lowerIsBetter, isPercent]
+  const tape = [
+    ["Points", aL?.pts ?? awayT.ppg, hL?.pts ?? homeT.ppg],
+    ["Points allowed", aL?.oppPts ?? awayT.oppPpg, hL?.oppPts ?? homeT.oppPpg, true],
+    ["Rebounds", aL?.reb, hL?.reb],
+    ["Assists", aL?.ast, hL?.ast],
+    ["3-pointers made", made3(aL), made3(hL)],
+    ["Turnovers", aL?.tov, hL?.tov, true],
+    ["Field goal %", aL?.fg, hL?.fg, false, true],
+  ].filter(([, a, h]) => a != null && h != null);
+  const fmtV = (v, pct) => (pct ? Number(v).toFixed(1) + "%" : Number(v).toFixed(1));
+  // lineup tag per team: green only when the known five is from this very game
+  const tagOf = (lu, ab) => {
     const lineup = lineupFor(ab);
-    // Green only when the known lineup is from this very game (same ESPN event, or same day as this game's tip)
-    const isToday = lu.automated && lineup && lineup.date && (() => { if (lineup.eventId && String(lineup.eventId) === String(game.id)) return true; const et = (x) => new Date(new Date(x).toLocaleString("en-US", { timeZone: "America/New_York" })); const a = et(lineup.date), b = et(game.date); return a.toDateString() === b.toDateString(); })();
-    const when = lineup && lineup.date ? new Date(lineup.date).toLocaleDateString([], { month: "numeric", day: "numeric" }) : "";
-    return (
-      <span className={"absolute rounded-md bg-black/45 backdrop-blur-sm px-2 py-1 text-[9px] font-extrabold shadow-sm leading-tight " + (isToday ? "text-emerald-300" : "text-amber-300") + (top ? " left-2 top-2" : " right-2 bottom-2 text-right")}>
-        {lu.automated && lineup
-          ? (isToday ? <><span className="block">Confirmed lineup</span><span className="block text-[8px] font-bold opacity-80">{when}</span></>
-                     : <><span className="block">Projected lineup</span><span className="block text-[8px] font-bold opacity-80">last game {(lineup.home ? "vs " : "@ ") + lineup.opp} · {when}</span></>)
-          : "Projected lineup"}
-      </span>
-    );
+    const confirmed = lu.automated && lineup && lineup.date && (() => { if (lineup.eventId && String(lineup.eventId) === String(game.id)) return true; const et = (x) => new Date(new Date(x).toLocaleString("en-US", { timeZone: "America/New_York" })); return et(lineup.date).toDateString() === et(game.date).toDateString(); })();
+    return { confirmed, text: confirmed ? "Confirmed" : "Projected" };
   };
-  const Player = ({ x, slot, top }) => {
-    const p = x.p; if (!p) return null;
-    const h = healthOf(p); const st = effectiveStatus(p);
-    const short = /game\s*time|gtd/i.test(st) ? "GTD" : /quest/i.test(st) ? "GTD" : /doubt/i.test(st) ? "DOUBTFUL" : /season/i.test(st) ? "OUT" : /out|ir/i.test(st) ? "OUT" : /prob/i.test(st) ? "PROB" : st;
+  const hTag = tagOf(hLu, hAb), aTag = tagOf(aLu, aAb);
+  const ORDER = ["PG", "SG", "SF", "PF", "C"];
+  const bySlot = (lu) => { const m = {}; for (const x of lu.starters) if (x.p) m[x.slot] = x.p; return m; };
+  const aS = bySlot(aLu), hS = bySlot(hLu);
+  const STATS = [["pts", "PTS"], ["reb", "REB"], ["ast", "AST"]];
+  const Side = ({ p, color, right }) => {
+    if (!p) return <div className="flex-1 min-w-0 text-center text-[10px] text-slate-400">—</div>;
+    const hurt = isSidelined(p);
     return (
-      <button onClick={() => onSelect && onSelect(p)} className="absolute flex flex-col items-center" style={{ ...posOf(slot, top), transform: "translate(-50%, -50%)", width: "18%" }}>
-        <span className="relative w-full" style={{ aspectRatio: "1 / 1" }}>
-          <img src={photoOf(p)} alt="" className={"w-full h-full rounded-full object-cover object-top bg-white border-[3px] shadow-lg " + ringClsOf(p)} />
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-[110%] text-[8px] font-extrabold text-slate-700 bg-white/90 rounded px-1">{slot.lbl}</span>
-          {h !== "ok" && <span className={"absolute -top-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full text-[8px] font-extrabold text-white whitespace-nowrap " + (h === "q" ? "bg-amber-500" : "bg-red-600")}>{short}</span>}
+      <button onClick={() => onSelect && onSelect(p)} className={"flex-1 min-w-0 flex items-center gap-2 " + (right ? "flex-row-reverse text-right" : "text-left")}>
+        <span className="relative shrink-0">
+          <img src={photoOf(p) || ""} alt="" className={"w-12 h-12 rounded-full object-cover object-top bg-slate-100 dark:bg-slate-800 border-2 " + (hurt ? (healthOf(p) === "out" ? "border-red-500" : "border-amber-400") : "")} style={hurt ? undefined : { borderColor: color }} />
         </span>
-        <span className="mt-0.5 text-[10px] font-extrabold text-white whitespace-nowrap" style={{ textShadow: "0 1px 2px rgba(0,0,0,0.8)" }}>{cleanNo(p.no) ? "#" + cleanNo(p.no) + " " : ""}{lastNameOf(p)}</span>
+        <span className="min-w-0">
+          <span className="block text-[12px] font-bold text-slate-900 dark:text-white truncate">{lastNameOf(p)}</span>
+          <span className="block text-[9px] font-semibold text-slate-400">{cleanNo(p.no) ? "#" + cleanNo(p.no) : ""}</span>
+          {hurt && <span className="block mt-0.5"><StatusBadge status={/game\s*time|gtd/i.test(effectiveStatus(p)) ? "GTD" : effectiveStatus(p)} /></span>}
+        </span>
       </button>
     );
   };
   return (
-    <div className="mb-4">
-      <div className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase mb-2 px-1">Starting lineups</div>
-      <div className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-md" style={{ paddingBottom: (TOTAL / 50 * 100).toFixed(1) + "%", background: th.floor || "repeating-linear-gradient(90deg,#e3b77c 0 6.5%,#dbad70 6.5% 13%)" }}>
-        <div className="absolute inset-0" style={{ background: "repeating-linear-gradient(0deg, rgba(0,0,0,0.045) 0 1px, transparent 1px 22px)" }} />
-        {/* bottom half: the home court exactly as the team view draws it (apron clipped off) */}
-        <svg viewBox={`0 0 50 47`} preserveAspectRatio="none" className="absolute left-0 bottom-0 w-full" style={{ height: "50%", pointerEvents: "none" }}>
-          <HalfCourtLines th={th} color={color} abbr={hAb} team={homeT} nick={nick} />
-        </svg>
-        {/* top half: the same floor mirrored for the visiting end */}
-        <svg viewBox={`0 0 50 47`} preserveAspectRatio="none" className="absolute left-0 top-0 w-full" style={{ height: "50%", pointerEvents: "none", transform: "rotate(180deg)" }}>
-          <HalfCourtLines th={th} color={color} abbr={hAb} team={homeT} nick={nick} />
-        </svg>
-        {/* out-of-bounds line around the whole floor */}
-        <svg viewBox="0 0 50 94" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" style={{ pointerEvents: "none" }}>
-          <rect x="0.25" y="0.25" width="49.5" height="93.5" fill="none" stroke={th.side === "none" ? "transparent" : th.side || "rgba(255,255,255,0.8)"} strokeWidth="0.4" />
-        </svg>
-        {homeT && (homeT.courtLogo || th.courtLogo || homeT.logo) && (
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full overflow-hidden pointer-events-none select-none" style={{ width: Math.min((th.logoW || 26) * 1.15, 36) + "%", aspectRatio: "1 / 1", ...(th.logoRing ? { boxShadow: "0 0 0 2px " + th.logoRing } : {}) }}>
-            <img src={homeT.courtLogo || th.courtLogo || homeT.logo} alt="" className="absolute inset-[6%] w-[88%] h-[88%] object-contain" style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))" }} />
+    <div className="mb-4 space-y-4">
+      {tape.length > 0 && (
+        <div>
+          <div className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase mb-2 px-1">Tale of the tape</div>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="flex items-center gap-1.5 text-[11px] font-extrabold" style={{ color: ac }}><img src={logoFor(aAb) || ""} alt="" className="w-5 h-5 object-contain" style={logoTrim(aAb)} />{aAb}</span>
+              <span className="text-[9px] font-semibold text-slate-400">per game this season</span>
+              <span className="flex items-center gap-1.5 text-[11px] font-extrabold" style={{ color: hc }}>{hAb}<img src={logoFor(hAb) || ""} alt="" className="w-5 h-5 object-contain" style={logoTrim(hAb)} /></span>
+            </div>
+            {tape.map(([lbl, a, h, lower, pct]) => {
+              const aWin = lower ? a < h : a > h, hWin = lower ? h < a : h > a;
+              const tot = (Number(a) + Number(h)) || 1; const aw = Math.max(8, Math.min(92, (Number(a) / tot) * 100));
+              return (
+                <div key={lbl} className="py-1.5">
+                  <div className="flex items-baseline justify-between">
+                    <span className={"text-[13px] tabular-nums " + (aWin ? "font-extrabold text-slate-900 dark:text-white" : "font-semibold text-slate-400")}>{fmtV(a, pct)}</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{lbl}</span>
+                    <span className={"text-[13px] tabular-nums " + (hWin ? "font-extrabold text-slate-900 dark:text-white" : "font-semibold text-slate-400")}>{fmtV(h, pct)}</span>
+                  </div>
+                  <div className="flex h-1.5 mt-1 gap-0.5">
+                    <span className="rounded-full" style={{ width: aw + "%", backgroundColor: ac, opacity: aWin ? 1 : 0.35 }} />
+                    <span className="rounded-full flex-1" style={{ backgroundColor: hc, opacity: hWin ? 1 : 0.35 }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        )}
-        {aLu.starters.map((x, i) => <Player key={"a" + i} x={x} slot={COURT_SLOTS.find((c) => c.lbl === x.slot) || COURT_SLOTS[i]} top />)}
-        {hLu.starters.map((x, i) => <Player key={"h" + i} x={x} slot={COURT_SLOTS.find((c) => c.lbl === x.slot) || COURT_SLOTS[i]} />)}
-        <Tag lu={aLu} ab={aAb} top /><Tag lu={hLu} ab={hAb} />
+        </div>
+      )}
+      <div>
+        <div className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase mb-2 px-1">Face-off · starters</div>
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-800">
+            <span className="flex items-center gap-1.5"><img src={logoFor(aAb) || ""} alt="" className="w-5 h-5 object-contain" style={logoTrim(aAb)} /><span className={"text-[9px] font-extrabold uppercase tracking-wide " + (aTag.confirmed ? "text-green-600" : "text-amber-600")}>{aTag.text}</span></span>
+            <span className="text-[9px] font-semibold text-slate-400">season averages</span>
+            <span className="flex items-center gap-1.5"><span className={"text-[9px] font-extrabold uppercase tracking-wide " + (hTag.confirmed ? "text-green-600" : "text-amber-600")}>{hTag.text}</span><img src={logoFor(hAb) || ""} alt="" className="w-5 h-5 object-contain" style={logoTrim(hAb)} /></span>
+          </div>
+          {ORDER.map((slot) => {
+            const a = aS[slot], h = hS[slot]; const sa = a ? curStats(a) : null, sh = h ? curStats(h) : null;
+            return (
+              <div key={slot} className="px-3 py-2.5 border-b last:border-0 border-slate-100 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Side p={a} color={ac} />
+                  <span className="shrink-0 w-8 h-8 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10px] font-extrabold flex items-center justify-center">{slot}</span>
+                  <Side p={h} color={hc} right />
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                  {STATS.map(([k, lbl]) => {
+                    const va = sa?.[k], vh = sh?.[k]; const aWin = va != null && vh != null && va > vh, hWin = va != null && vh != null && vh > va;
+                    return (
+                      <div key={k} className="flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-2 py-1">
+                        <span className={"text-[12px] tabular-nums " + (aWin ? "font-extrabold" : "font-semibold text-slate-400")} style={aWin ? { color: ac } : undefined}>{va != null ? fmt1(va) : "—"}</span>
+                        <span className="text-[8px] font-bold tracking-wider text-slate-400">{lbl}</span>
+                        <span className={"text-[12px] tabular-nums " + (hWin ? "font-extrabold" : "font-semibold text-slate-400")} style={hWin ? { color: hc } : undefined}>{vh != null ? fmt1(vh) : "—"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -1297,7 +1356,7 @@ function GameView({ game, teams, players, onBack, onSelectTeam, onSelectPlayer }
             </div>
           </div>
         )}
-        {game.state === "pre" && <FullCourt game={game} teams={teams} players={players} onSelect={onSelectPlayer} />}
+        {game.state === "pre" && <FaceOff game={game} teams={teams} players={players} onSelect={onSelectPlayer} />}
         {g && g.box && (g.box[away.abbr] || g.box[home.abbr]) && (() => {
           const t = boxTeam === home.abbr ? home : away;
           const bx = g.box[t.abbr] || { cols: [], rows: [] };
