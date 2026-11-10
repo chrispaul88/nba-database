@@ -1,3 +1,5 @@
+export const config = { maxDuration: 30 };
+
 // /api/injuries — ESPN's NBA injury feed, flattened and newest-first.
 // Each record: player, team, status, injury detail, estimated return, and
 // ESPN's write-up. Cached 5 minutes.

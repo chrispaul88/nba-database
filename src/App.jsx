@@ -771,16 +771,26 @@ function CheatSheet({ games, teams, players, onSelect }) {
   const [stat, setStat] = useState("pts");
   const [floor, setFloor] = useState(70);                // hit-rate threshold for the headline line
   const [data, setData] = useState(null);
-  useEffect(() => { let alive = true; fetch("/api/season-stats?logs=30").then((r) => r.json()).then((d) => alive && setData(d && d.players ? d : { players: [] })).catch(() => alive && setData({ players: [] })); return () => { alive = false; }; }, []);
-  const teamBy = (ab) => (teams || []).find((t) => sameAbbr(t.abbr || toAbbr(t.name), ab));
   const upcoming = (games || []).filter((g) => g.state !== "post");
-  const playing = new Set(); const oppOf = {};
-  for (const g of upcoming) for (const [me, them] of [["away", "home"], ["home", "away"]]) { const T = teamBy(g[me].abbr); if (T) { const ab = T.abbr || toAbbr(T.name); playing.add(modernAbbr(ab)); oppOf[modernAbbr(ab)] = { opp: g[them].abbr, home: me === "home" }; } }
-  if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading the last 30 days of box scores…</div>;
+  const slate = [];                                       // [{ ab, opp, home }] using ESPN's codes from the scoreboard
+  for (const g of upcoming) for (const [me, them] of [["away", "home"], ["home", "away"]]) slate.push({ ab: g[me].abbr, opp: g[them].abbr, home: me === "home" });
+  const slateKey = slate.map((x) => x.ab).sort().join(",");
+  useEffect(() => {
+    if (!slateKey) { setData({ players: [] }); return; }
+    let alive = true; setData(null);
+    fetch("/api/season-stats?logs=30&teams=" + encodeURIComponent(slateKey))
+      .then((r) => r.ok ? r.json() : r.text().then((t) => ({ error: "HTTP " + r.status + (/timeout|FUNCTION_INVOCATION/i.test(t) ? " (timed out)" : "") })))
+      .then((d) => alive && setData(d && d.players ? d : { players: [], error: d?.error || "No data returned" }))
+      .catch((e) => alive && setData({ players: [], error: String(e.message || e) }));
+    return () => { alive = false; };
+  }, [slateKey]);
+  const slotOf = (ab) => slate.find((x) => sameAbbr(x.ab, ab));
+  if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading the last 30 days of box scores for tonight's teams…</div>;
+  if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
   const val = (gm) => (stat === "pra" ? gm.pts + gm.reb + gm.ast : gm[stat]);
   const rows = [];
   for (const rec of data.players) {
-    if (!playing.has(modernAbbr(rec.team))) continue;
+    const slot = slotOf(rec.team); if (!slot) continue;
     const gs = rec.g; if (gs.length < 3) continue;
     const p = (players || []).find((x) => espnNrm(x.name) === espnNrm(rec.name));
     if (p && healthOf(p) === "out") continue;
@@ -791,7 +801,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
     if (!best) continue;
     const next = rates[rates.indexOf(best) + 1] || null;
     const recent = vals.slice(-5);
-    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, ...oppOf[modernAbbr(rec.team)] });
+    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home });
   }
   // best lines first; ties broken by how reliable the next line still is
   rows.sort((a, b) => b.best.L - a.best.L || (b.next?.pct ?? 0) - (a.next?.pct ?? 0) || b.avg - a.avg);
@@ -829,7 +839,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
             </button>
           );
         })}
-        {rows.length === 0 && <div className="text-center text-xs text-slate-400 py-10">No one playing today clears a {CS_LABEL[stat]} line at {floor}% yet (3+ games needed).</div>}
+        {rows.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">{upcoming.length === 0 ? "No games left on this day." : `No one clears a ${CS_LABEL[stat]} line at ${floor}% yet. Read ${data.games ?? 0} games for ${data.players.length} players.`}</div>}
       </div>
     </div>
   );

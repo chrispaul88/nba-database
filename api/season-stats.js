@@ -1,3 +1,5 @@
+export const config = { maxDuration: 60 };
+
 // /api/season-stats — this season's per-game averages for every NBA player
 // from ESPN's stats table (one request for the whole league). The app lays
 // these over the Airtable Stats table as the current-season row, so stats
@@ -96,15 +98,22 @@ export default async function handler(req, res) {
       const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
       let events = [];
       try { events = (await getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ymd(from)}-${ymd(to)}&limit=1000`)).events || []; } catch {}
-      const done = events.filter((e) => (e.season?.type == null || e.season.type === 2) && e.competitions?.[0]?.status?.type?.completed);
+      // ?teams=BOS,NY,… → only read games involving those teams (tonight's slate) — far fewer box scores
+      const want = String(req.query.teams || "").toUpperCase().split(",").map((x) => x.trim()).filter(Boolean);
+      const fixA = (x) => { const u = String(x || "").toUpperCase(); return ABBR_FIX[u] || u; };
+      const VAR = { GS: "GSW", GSW: "GS", SA: "SAS", SAS: "SA", NO: "NOP", NOP: "NO", NY: "NYK", NYK: "NY", UTAH: "UTA", UTA: "UTAH", WSH: "WAS", WAS: "WSH", PHX: "PHO", PHO: "PHX", BKN: "BRK", BRK: "BKN" };
+      const wantSet = new Set(want.flatMap((x) => [x, fixA(x), VAR[x], VAR[fixA(x)]].filter(Boolean)));
+      const involves = (e) => !wantSet.size || (e.competitions?.[0]?.competitors || []).some((c) => { const ab = String(c.team?.abbreviation || "").toUpperCase(); return wantSet.has(ab) || wantSet.has(fixA(ab)); });
+      const done = events.filter((e) => (e.season?.type == null || e.season.type === 2) && e.competitions?.[0]?.status?.type?.completed && involves(e));
       const logs = {};
-      for (let i = 0; i < done.length; i += 8) {
-        const sums = await Promise.all(done.slice(i, i + 8).map((e) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${e.id}`).catch(() => null)));
+      for (let i = 0; i < done.length; i += 20) {
+        const sums = await Promise.all(done.slice(i, i + 20).map((e) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${e.id}`).catch(() => null)));
         sums.forEach((s, j) => {
           const e = done[i + j]; const comp = (e.competitions || [])[0] || {};
           for (const tb of s?.boxscore?.players || []) {
-            const grp = (tb.statistics || [])[0] || {}; const cols = grp.names || grp.labels || [];
+            const grp = (tb.statistics || [])[0] || {}; const cols = grp.labels && grp.labels.includes("PTS") ? grp.labels : (grp.names || grp.labels || []);
             const raw = String(tb.team?.abbreviation || "").toUpperCase(); const ab = ABBR_FIX[raw] || raw;
+            if (wantSet.size && !wantSet.has(raw) && !wantSet.has(ab)) continue;
             const opp = (comp.competitors || []).find((cc) => String(cc.team?.id) !== String(tb.team?.id)); const oraw = String(opp?.team?.abbreviation || "").toUpperCase();
             const mine = (comp.competitors || []).find((cc) => String(cc.team?.id) === String(tb.team?.id));
             for (const a of grp.athletes || []) {
@@ -120,7 +129,7 @@ export default async function handler(req, res) {
       }
       for (const r of Object.values(logs)) r.g.sort((x, y) => new Date(x.d) - new Date(y.d));
       res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=1800");
-      return res.status(200).json({ days, games: done.length, players: Object.values(logs), updatedAt: new Date().toISOString() });
+      return res.status(200).json({ days, games: done.length, scanned: events.length, players: Object.values(logs), updatedAt: new Date().toISOString() });
     }
     if (req.query?.recap) {
       const out = await recap(Math.min(60, Math.max(1, Number(req.query.recap) || 7)));
