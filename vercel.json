@@ -1,6 +1,20 @@
 {
   "crons": [
-    { "path": "/api/sync-injuries", "schedule": "0 16 * * *" },
-    { "path": "/api/sync-ratings", "schedule": "0 12 * * 5" }
-  ]
+    {
+      "path": "/api/sync-injuries",
+      "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/api/sync-ratings",
+      "schedule": "0 12 * * 5"
+    }
+  ],
+  "functions": {
+    "api/season-stats.js": {
+      "maxDuration": 60
+    },
+    "api/injuries.js": {
+      "maxDuration": 30
+    }
+  }
 }
