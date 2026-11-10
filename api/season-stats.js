@@ -88,16 +88,32 @@ async function recap(days) {
   };
 }
 
+
+// Every completed regular-season game between two dates, fetched one day at a time
+// in parallel. ESPN's date-range query sometimes comes back empty; single days don't.
+async function eventsBetween(from, to) {
+  const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const days = [];
+  for (let d = new Date(from); d <= to; d = new Date(d.getTime() + 86400000)) days.push(ymd(d));
+  const out = []; const seen = new Set();
+  for (let i = 0; i < days.length; i += 15) {
+    const res = await Promise.all(days.slice(i, i + 15).map((x) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${x}`).catch(() => ({ events: [] }))));
+    for (const r of res) for (const e of r.events || []) if (!seen.has(e.id)) { seen.add(e.id); out.push(e); }
+  }
+  return out;
+}
+
 export default async function handler(req, res) {
   try {
     const now = new Date();
     // ── per-player game logs, last N days (default 30), compact ──
     if (req.query?.logs) {
-      const days = Math.min(60, Math.max(7, Number(req.query.logs) || 30));
-      const to = new Date(), from = new Date(to.getTime() - days * 86400000);
-      const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
-      let events = [];
-      try { events = (await getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ymd(from)}-${ymd(to)}&limit=1000`)).events || []; } catch {}
+      // ?logs=season (default) → since opening night; ?logs=30 → last 30 days
+      const to = new Date();
+      const seasonStart = new Date((now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1), 9, 15);
+      const from = String(req.query.logs) === "season" || !Number(req.query.logs) ? seasonStart : new Date(to.getTime() - Math.min(120, Math.max(7, Number(req.query.logs))) * 86400000);
+      const days = Math.round((to - from) / 86400000);
+      const events = await eventsBetween(from, to);
       // ?teams=BOS,NY,… → only read games involving those teams (tonight's slate) — far fewer box scores
       const want = String(req.query.teams || "").toUpperCase().split(",").map((x) => x.trim()).filter(Boolean);
       const fixA = (x) => { const u = String(x || "").toUpperCase(); return ABBR_FIX[u] || u; };
@@ -129,7 +145,7 @@ export default async function handler(req, res) {
       }
       for (const r of Object.values(logs)) r.g.sort((x, y) => new Date(x.d) - new Date(y.d));
       res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=1800");
-      return res.status(200).json({ days, games: done.length, scanned: events.length, players: Object.values(logs), updatedAt: new Date().toISOString() });
+      return res.status(200).json({ days, from: from.toISOString(), games: done.length, scanned: events.length, players: Object.values(logs), updatedAt: new Date().toISOString() });
     }
     if (req.query?.recap) {
       const out = await recap(Math.min(60, Math.max(1, Number(req.query.recap) || 7)));
