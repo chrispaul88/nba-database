@@ -57,7 +57,14 @@ function mixHex(a, b, t) {
 const teamColor2 = (abbr) => TEAM_COLORS2[String(abbr || "").toUpperCase()] || "#F59E0B";
 // Border color for headline tiles: the secondary color, unless it's too light to
 // show against a white card (Brooklyn, Spurs…) — then the primary.
-const tileBorder = (abbr) => teamColor(abbr);
+// Dark mode: a black or navy team color disappears on a dark card. inkColor swaps
+// those for white wherever the color is used as text, a line, or an outline.
+const isDark = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+const lumOf = (hex) => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || "")); return m ? (0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16)) / 255 : 1; };
+const inkColor = (color) => (isDark() && lumOf(color) < 0.16 ? "#FFFFFF" : color);
+const teamInk = (abbr) => inkColor(teamColor(abbr));
+// Tile outline: the readable team color. Chicago uses white (black in light mode, where white wouldn't show).
+const tileBorder = (abbr) => (String(abbr || "").toUpperCase() === "CHI" ? (isDark() ? "#FFFFFF" : "#000000") : teamInk(abbr));
 // Teams whose logo is mostly the primary color — the center circle uses the
 // secondary color for them so the logo doesn't disappear into it.
 const FLIP_CENTER = new Set(["HOU", "CHI", "MIA", "TOR", "ATL", "POR", "WSH", "IND", "NOP", "NO", "DAL", "ORL", "MEM", "CLE", "LAC", "DET", "MIN", "UTAH", "UTA", "BKN", "SAS", "SA"]);
@@ -765,7 +772,7 @@ function CompareView({ a, b, color, onSwap }) {
 // "Jalen Johnson: 6+ REB in 90% of games" — built from every box score in the
 // last 30 days. The line shown is the highest one he still clears ≥ 70% of the
 // time, with the next line up beside it so you can see where it drops off.
-const CS_LINES = { pts: [8, 10, 12, 15, 18, 20, 22, 25, 28, 30], reb: [3, 4, 5, 6, 7, 8, 10, 12], ast: [2, 3, 4, 5, 6, 7, 8, 10], p3m: [1, 2, 3, 4, 5], pra: [15, 20, 25, 30, 35, 40, 45] };
+const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [3, 4, 5, 6, 7, 8, 10, 12], ast: [2, 3, 4, 5, 6, 7, 8, 10], p3m: [1, 2, 3, 4, 5], pra: [15, 20, 25, 30, 35, 40, 45] };
 const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM", pra: "PTS+REB+AST" };
 function CheatSheet({ games, teams, players, onSelect }) {
   const [stat, setStat] = useState("pts");
@@ -773,7 +780,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
   const [data, setData] = useState(null);
   const upcoming = (games || []).filter((g) => g.state !== "post");
   const slate = [];                                       // [{ ab, opp, home }] using ESPN's codes from the scoreboard
-  for (const g of upcoming) for (const [me, them] of [["away", "home"], ["home", "away"]]) slate.push({ ab: g[me].abbr, opp: g[them].abbr, home: me === "home" });
+  for (const g of upcoming) for (const [me, them] of [["away", "home"], ["home", "away"]]) slate.push({ ab: g[me].abbr, opp: g[them].abbr, home: me === "home", date: g.date });
   const slateKey = slate.map((x) => x.ab).sort().join(",");
   useEffect(() => {
     if (!slateKey) { setData({ players: [] }); return; }
@@ -785,6 +792,11 @@ function CheatSheet({ games, teams, players, onSelect }) {
     return () => { alive = false; };
   }, [slateKey]);
   const slotOf = (ab) => slate.find((x) => sameAbbr(x.ab, ab));
+  // Back-to-back: the team's most recent game was the calendar day (Eastern) before this one
+  const etDay = (d) => new Date(new Date(d).toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const lastGameOf = {};
+  for (const rec of (data && data.players) || []) { const last = rec.g[rec.g.length - 1]; if (last && (!lastGameOf[rec.team] || new Date(last.d) > new Date(lastGameOf[rec.team]))) lastGameOf[rec.team] = last.d; }
+  const isB2B = (team, gameDate) => { const last = lastGameOf[team]; if (!last || !gameDate) return false; const y = etDay(gameDate); y.setDate(y.getDate() - 1); return etDay(last).toDateString() === y.toDateString(); };
   if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading this season's box scores for these teams… (10–20 seconds the first time)</div>;
   if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
   const val = (gm) => (stat === "pra" ? gm.pts + gm.reb + gm.ast : gm[stat]);
@@ -814,7 +826,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
     if (!best) continue;
     const next = rates[rates.indexOf(best) + 1] || null;
     const recent = vals.slice(-5);
-    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home, spot: spotOf(slot.opp) });
+    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home, spot: spotOf(slot.opp), b2b: isB2B(rec.team, slot.date) });
   }
   // best lines first; ties broken by how reliable the next line still is
   rows.sort((a, b) => b.best.L - a.best.L || (b.next?.pct ?? 0) - (a.next?.pct ?? 0) || b.avg - a.avg);
@@ -828,7 +840,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
         <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Consistency · season</span>
         <span className="flex gap-1">{[70, 80, 90].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2 py-0.5 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%+</button>)}</span>
       </div>
-      <div className="text-[10px] text-slate-400 mb-3 px-1">Green chip: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of games, then the next line up. The tag under his name is tonight's matchup: how much the opponent gives up in this stat versus the league. Tiles on the right are his last 5 games.</div>
+      <div className="text-[10px] text-slate-400 mb-3 px-1">Green chip: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of games, then the next line up. The tag under his name is tonight's matchup: how much the opponent gives up in this stat versus the league. Tiles on the right are his last 5 games. B2B = his team also played yesterday.</div>
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
         {rows.slice(0, 40).map((r, i) => {
           const ab = r.rec.team;
@@ -839,6 +851,7 @@ function CheatSheet({ games, teams, players, onSelect }) {
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
                   {r.p && isSidelined(r.p) && <StatusBadge status={effectiveStatus(r.p)} />}
+                  {r.b2b && <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold bg-orange-500 text-white">B2B</span>}
                 </span>
                 <span className="block text-[10px] text-slate-500 dark:text-slate-400 truncate">{ab} {r.home ? "vs" : "@"} {r.opp}{r.spot ? ` · ${r.opp} allows ${fmt1(r.spot.v)} ${stat === "pra" ? "P+R+A" : CS_LABEL[stat]}` : ""}</span>
                 {r.spot && <span className={"inline-block mt-1 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold " + (r.spot.tier === "great" ? "bg-green-100 text-green-700" : r.spot.tier === "tough" ? "bg-red-100 text-red-600" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300")}>{r.spot.tier === "great" ? "Great spot" : r.spot.tier === "tough" ? "Tough spot" : "Neutral"} · {r.opp} {r.spot.note}</span>}
@@ -901,7 +914,7 @@ function FaceOff({ game, teams, players, onSelect }) {
     return (
       <button onClick={() => onSelect && onSelect(p)} className={"flex-1 min-w-0 flex items-center gap-2 " + (right ? "flex-row-reverse text-right" : "text-left")}>
         <span className="relative shrink-0">
-          <img src={photoOf(p) || ""} alt="" className={"w-12 h-12 rounded-full object-cover object-top bg-slate-100 dark:bg-slate-800 border-2 " + (hurt ? (healthOf(p) === "out" ? "border-red-500" : "border-amber-400") : "")} style={hurt ? undefined : { borderColor: color }} />
+          <img src={photoOf(p) || ""} alt="" className={"w-12 h-12 rounded-full object-cover object-top bg-slate-100 dark:bg-slate-800 border-2 " + (hurt ? (healthOf(p) === "out" ? "border-red-500" : "border-amber-400") : "")} style={hurt ? undefined : { borderColor: inkColor(color) }} />
         </span>
         <span className="min-w-0">
           <span className="block text-[12px] font-bold text-slate-900 dark:text-white truncate">{lastNameOf(p)}</span>
@@ -959,17 +972,17 @@ function FaceOff({ game, teams, players, onSelect }) {
                   <span className="shrink-0 w-8 h-8 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10px] font-extrabold flex items-center justify-center">{slot}</span>
                   <Side p={h} color={hc} right />
                 </div>
-                <div className="mt-2 grid grid-cols-3 gap-1.5">
-                  {STATS.map(([k, lbl]) => {
-                    const va = sa?.[k], vh = sh?.[k]; const aWin = va != null && vh != null && va > vh, hWin = va != null && vh != null && vh > va;
-                    return (
-                      <div key={k} className="flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-2 py-1">
-                        <span className={"text-[12px] tabular-nums " + (aWin ? "font-extrabold" : "font-semibold text-slate-400")} style={aWin ? { color: ac } : undefined}>{va != null ? fmt1(va) : "—"}</span>
-                        <span className="text-[8px] font-bold tracking-wider text-slate-400">{lbl}</span>
-                        <span className={"text-[12px] tabular-nums " + (hWin ? "font-extrabold" : "font-semibold text-slate-400")} style={hWin ? { color: hc } : undefined}>{vh != null ? fmt1(vh) : "—"}</span>
-                      </div>
-                    );
-                  })}
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  {[[sa, ac], [sh, hc]].map(([st, col], side) => (
+                    <div key={side} className="grid grid-cols-3 gap-1">
+                      {STATS.map(([k, lbl]) => (
+                        <div key={k} className="rounded-lg bg-slate-50 dark:bg-slate-800/60 py-1 text-center">
+                          <div className="text-[12px] font-extrabold tabular-nums text-slate-900 dark:text-white leading-none">{st?.[k] != null ? fmt1(st[k]) : "—"}</div>
+                          <div className="text-[8px] font-bold tracking-wider mt-0.5" style={{ color: inkColor(col) }}>{lbl}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
                 </div>
               </div>
             );
@@ -1078,7 +1091,7 @@ function PlayerDetail({ p, onBack, backLabel, mode = "full", teams, players, onJ
             const c0 = playerHeaderColor(p);
             return (
               <button key={k} onClick={onJumpToStats && v != null ? () => onJumpToStats(p, k) : undefined} className="rounded-2xl text-center bg-white dark:bg-slate-900 shadow-md border-2 py-3" style={{ borderColor: tileBorder(teamOfPlayer(p) || toAbbr(activeOf(p)?.team)) }}>
-                <div className="text-[10px] font-extrabold tracking-widest uppercase" style={{ color: c0 }}>{lbl}</div>
+                <div className="text-[10px] font-extrabold tracking-widest uppercase" style={{ color: inkColor(c0) }}>{lbl}</div>
                 <div className="text-2xl font-extrabold text-slate-900 dark:text-white tabular-nums leading-none mt-1">{v != null ? fmt1(v) : "—"}</div>
                 <div className={"text-[10px] font-semibold mt-1 tabular-nums " + (cls || "text-slate-400")}>{r ? r.label : (st ? "per game" : "no games yet")}</div>
               </button>
@@ -1145,7 +1158,7 @@ function PlayerDetail({ p, onBack, backLabel, mode = "full", teams, players, onJ
                     ))}
                   </div>
                 ))}
-                <div className="p-3">                {st.espnId && <div className="pt-3 border-t border-slate-100 dark:border-slate-800"><GameLogChart espnId={st.espnId} color={c} /></div>}
+                <div className="p-3">                {st.espnId && <div className="pt-3 border-t border-slate-100 dark:border-slate-800"><GameLogChart espnId={st.espnId} color={inkColor(c)} /></div>}
                 </div>
               </div>
             </>
@@ -2750,7 +2763,7 @@ function TeamSchedule({ team, abbr, teams, onSelectTeam, onOpenGame, tilesOnly }
       <div className="grid grid-cols-4 gap-1.5">
         {tiles.map((t) => (
           <div key={t.lbl} className="bg-white dark:bg-slate-900 rounded-2xl border-2 px-1 py-2.5 text-center shadow-sm flex flex-col items-center justify-center" style={{ borderColor: tileBorder(abbr) }}>
-            <div className="text-[8px] font-extrabold tracking-widest uppercase leading-tight" style={{ color: teamColor(abbr) }}>{t.lbl}</div>
+            <div className="text-[8px] font-extrabold tracking-widest uppercase leading-tight" style={{ color: teamInk(abbr) }}>{t.lbl}</div>
             <div className={"text-base font-extrabold mt-1 tabular-nums whitespace-nowrap " + t.bigCls}>{t.big}</div>
             <div className="text-[8px] font-semibold text-slate-400 mt-0.5 leading-tight">{t.sub}</div>
           </div>
@@ -2762,7 +2775,7 @@ function TeamSchedule({ team, abbr, teams, onSelectTeam, onOpenGame, tilesOnly }
       <div className="grid grid-cols-4 gap-1.5 hidden">
         {tiles.map((t) => (
           <div key={t.lbl} className="bg-white dark:bg-slate-900 rounded-2xl border-2 px-1 py-2.5 text-center shadow-sm flex flex-col items-center justify-center" style={{ borderColor: tileBorder(abbr) }}>
-            <div className="text-[8px] font-extrabold tracking-widest uppercase leading-tight" style={{ color: teamColor(abbr) }}>{t.lbl}</div>
+            <div className="text-[8px] font-extrabold tracking-widest uppercase leading-tight" style={{ color: teamInk(abbr) }}>{t.lbl}</div>
             <div className={"text-base font-extrabold mt-1 tabular-nums whitespace-nowrap " + t.bigCls}>{t.big}</div>
             <div className="text-[8px] font-semibold text-slate-400 mt-0.5 leading-tight">{t.sub}</div>
           </div>
@@ -3020,7 +3033,7 @@ function TeamTrends({ roster, abbr, onSelectPlayer }) {
 // ── Team Profile: each stat as a league-wide dot plot, this team highlighted ──
 // Team per-game numbers are the roster's per-game stats added up; percentages
 // are weighted by attempts. Shows rank AND distance from the pack.
-const PROFILE_STATS = [["pts", "PTS"], ["reb", "REB"], ["oreb", "OREB"], ["dreb", "DREB"], ["ast", "AST"], ["stl", "STL"], ["blk", "BLK"], ["tov", "TO", true], ["fga", "FGA"], ["p3a", "3PA"], ["fta", "FTA"], ["fg", "FG%", false, "pct"], ["p3", "3P%", false, "pct"], ["ft", "FT%", false, "pct"]];
+const PROFILE_STATS = [["pts", "PTS"], ["fgm", "FGM"], ["p3m", "3PM"], ["ftm", "FTM"], ["reb", "REB"], ["oreb", "OREB"], ["dreb", "DREB"], ["ast", "AST"], ["stl", "STL"], ["blk", "BLK"], ["tov", "TO", true], ["fga", "FGA"], ["p3a", "3PA"], ["fta", "FTA"], ["fg", "FG%", false, "pct"], ["p3", "3P%", false, "pct"], ["ft", "FT%", false, "pct"]];
 function teamStatLine(roster, key, pct) {
   const rows = roster.map(latestStats).filter((s) => s && (s.gp ?? 0) > 0);
   if (!rows.length) return null;
@@ -3037,7 +3050,8 @@ function TeamProfile({ roster, abbr, teams, players }) {
   const league = useMemo(() => (teams || []).filter((t) => !isFaTeam(t)).map((t) => {
     const ab = t.abbr || toAbbr(t.name);
     const live = LIVE_STATS.teams && (LIVE_STATS.teams[modernAbbr(ab)] || LIVE_STATS.teams[ab] || Object.entries(LIVE_STATS.teams).find(([k]) => modernAbbr(k) === modernAbbr(ab))?.[1]);
-    if (live && live.gp > 0) return { abbr: ab, ...live };
+    if (live && live.gp > 0) { const made = (att, pc) => (live[att] != null && live[pc] != null ? Math.round(live[att] * live[pc]) / 100 : null);   // makes per game = attempts × percentage
+      return { abbr: ab, ...live, fgm: live.fgm ?? made("fga", "fg"), p3m: live.p3m ?? made("p3a", "p3"), ftm: live.ftm ?? made("fta", "ft") }; }
     if (LIVE_STATS.teams) return { abbr: ab };          // live season: a team with no game yet has no line
     const r = rosterOf(t, players);
     const o = { abbr: ab }; for (const [k, , , kind] of PROFILE_STATS) o[k] = teamStatLine(r, k, kind === "pct"); return o;
@@ -3058,7 +3072,7 @@ function TeamProfile({ roster, abbr, teams, players }) {
           <div key={k} className="flex items-center gap-3 py-2.5 border-t first:border-0 border-slate-100 dark:border-slate-800">
             <div className="w-10 shrink-0 text-[11px] font-extrabold text-slate-900 dark:text-white">{lbl}</div>
             <div className="flex-1 relative h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-visible">
-              <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: pct(mine) + "%", backgroundColor: color }} />
+              <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: pct(mine) + "%", backgroundColor: inkColor(color) }} />
               <div className="absolute -top-1 w-0.5 h-5 bg-slate-500 dark:bg-slate-300 rounded" style={{ left: `calc(${pct(avg)}% - 1px)` }} title="league avg" />
             </div>
             <div className="w-12 shrink-0 text-right text-sm font-extrabold text-slate-900 dark:text-white tabular-nums">{kind === "pct" ? mine.toFixed(1) + "%" : mine.toFixed(1)}</div>
@@ -3171,7 +3185,7 @@ function bucketColor(b, color, fallback) {
   return fallback;
 }
 function CapOutlook({ roster, color, onSelectPlayer }) {
-  const tileBorder = () => color, teamColor = () => color, abbr = "";
+  const tileBorder = () => inkColor(color), teamInk = () => inkColor(color), abbr = "";
   const y0 = startYear(CURRENT_SEASON);
   const years = [y0, y0 + 1, y0 + 2, y0 + 3];
   const [sel, setSel] = useState(y0);
@@ -3248,9 +3262,9 @@ function CapOutlook({ roster, color, onSelectPlayer }) {
       {cur && (
         <>
           <div className="grid grid-cols-3 gap-2 mt-3">
-            <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={cur.total ? fmtM(cur.total) : "—"} label={seasonLabel(cur.yr) + " Payroll"} sub={cur.rows.length + " under contract"} />
-            <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={(room >= 0 ? "+" : "−") + fmtM(Math.abs(room)).slice(1)} label="vs Cap" valueClass={room >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-slate-900 dark:text-slate-100"} sub={room >= 0 ? "cap space" : "over the cap"} />
-            <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={(vsTax >= 0 ? "+" : "−") + fmtM(Math.abs(vsTax)).slice(1)} label="vs Tax" valueClass={vsTax > 0 ? "text-red-500" : "text-emerald-600 dark:text-emerald-400"} sub={{ label: status, cls: statusCls }} />
+            <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={cur.total ? fmtM(cur.total) : "—"} label={seasonLabel(cur.yr) + " Payroll"} sub={cur.rows.length + " under contract"} />
+            <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={(room >= 0 ? "+" : "−") + fmtM(Math.abs(room)).slice(1)} label="vs Cap" valueClass={room >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-slate-900 dark:text-slate-100"} sub={room >= 0 ? "cap space" : "over the cap"} />
+            <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={(vsTax >= 0 ? "+" : "−") + fmtM(Math.abs(vsTax)).slice(1)} label="vs Tax" valueClass={vsTax > 0 ? "text-red-500" : "text-emerald-600 dark:text-emerald-400"} sub={{ label: status, cls: statusCls }} />
           </div>
           <div className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase mt-5 mb-1.5 px-1">{seasonLabel(cur.yr)} on the books</div>
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
@@ -3312,9 +3326,9 @@ function BioPanel({ roster, abbr, teams, players, color, onSelectPlayer }) {
   return (
     <div className="mt-4">
       <div className="grid grid-cols-3 gap-2">
-        <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={avgExp != null ? avgExp.toFixed(1) : "—"} label="Avg Exp" sub={expRank ? { label: ordinal(expRank.rank), cls: expRank.rank <= 10 ? "text-green-600 dark:text-green-400" : expRank.rank <= 20 ? "text-yellow-600 dark:text-yellow-400" : "text-red-500 dark:text-red-400" } : "seasons"} />
-        <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={rookies} label="Rookies" />
-        <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={roster.length ? Math.round((drafted / roster.length) * 100) + "%" : "—"} label="Drafted" sub={drafted + " drafted by " + abbr} />
+        <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={avgExp != null ? avgExp.toFixed(1) : "—"} label="Avg Exp" sub={expRank ? { label: ordinal(expRank.rank), cls: expRank.rank <= 10 ? "text-green-600 dark:text-green-400" : expRank.rank <= 20 ? "text-yellow-600 dark:text-yellow-400" : "text-red-500 dark:text-red-400" } : "seasons"} />
+        <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={rookies} label="Rookies" />
+        <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={roster.length ? Math.round((drafted / roster.length) * 100) + "%" : "—"} label="Drafted" sub={drafted + " drafted by " + abbr} />
       </div>
       <div className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase mt-5 mb-1.5 px-1">Age profile</div>
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm px-4 py-3">
@@ -3444,17 +3458,17 @@ function TeamDetail({ team, teams, players, onBack, onSelectPlayer, onSelectTeam
             const ageCls = ageRank ? (ageRank <= 10 ? "text-green-600 dark:text-green-400" : ageRank <= 20 ? "text-yellow-600 dark:text-yellow-400" : "text-red-500 dark:text-red-400") : null;
             return (
               <>
-                <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={payroll ? fmtM(payroll) : "—"} label="Payroll" sub={roster.length + " players"} onClick={() => toggleC("cap")} active={cView === "cap"} activeColor={teamColor(abbr)} />
-                <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={fa} label="Free Agents" sub={"(Summer " + (startYear(CURRENT_SEASON) + 1) + ")"} onClick={() => toggleC("fa")} active={faOnly} activeColor={teamColor(abbr)} />
-                <Tile borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} value={avgAge != null ? avgAge.toFixed(1) : "—"} label="Avg Age" sub={ageRank ? { label: ordinal(ageRank) + (ageRank <= 3 ? " youngest" : ageRank >= ageRanked.length - 2 ? " oldest" : ""), cls: ageCls } : null} onClick={() => toggleC("bio")} active={cView === "bio"} activeColor={teamColor(abbr)} />
+                <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={payroll ? fmtM(payroll) : "—"} label="Payroll" sub={roster.length + " players"} onClick={() => toggleC("cap")} active={cView === "cap"} activeColor={teamColor(abbr)} />
+                <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={fa} label="Free Agents" sub={"(Summer " + (startYear(CURRENT_SEASON) + 1) + ")"} onClick={() => toggleC("fa")} active={faOnly} activeColor={teamColor(abbr)} />
+                <Tile borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} value={avgAge != null ? avgAge.toFixed(1) : "—"} label="Avg Age" sub={ageRank ? { label: ordinal(ageRank) + (ageRank <= 3 ? " youngest" : ageRank >= ageRanked.length - 2 ? " oldest" : ""), cls: ageCls } : null} onClick={() => toggleC("bio")} active={cView === "bio"} activeColor={teamColor(abbr)} />
               </>
             );
           })() : (
             <>
 
-              <Tile value={team.ppg != null ? team.ppg.toFixed(1) : "—"} label={STANDINGS_PHASE.v === "preseason" ? "PPG · Pre" : "PPG"} sub={rankOf(teams, team, "ppg", "desc")} borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "ppg") : undefined} />
-              <Tile value={team.oppPpg != null ? team.oppPpg.toFixed(1) : "—"} label={STANDINGS_PHASE.v === "preseason" ? "Opp PPG · Pre" : "Opp PPG"} sub={rankOf(teams, team, "oppPpg", "asc")} borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "oppPpg") : undefined} />
-              <Tile value={team.ppg != null && team.oppPpg != null ? ((team.ppg - team.oppPpg) > 0 ? "+" : "") + (team.ppg - team.oppPpg).toFixed(1) : "—"} label="Net" valueClass={team.ppg != null && team.oppPpg != null ? ((team.ppg - team.oppPpg) > 0 ? "text-green-600 dark:text-green-400" : (team.ppg - team.oppPpg) < 0 ? "text-red-500" : "text-slate-900 dark:text-white") : undefined} sub={rankOf(teams.map((t) => ({ ...t, net: t.ppg != null && t.oppPpg != null ? t.ppg - t.oppPpg : null })), { ...team, net: team.ppg != null && team.oppPpg != null ? team.ppg - team.oppPpg : null }, "net", "desc")} borderColor={tileBorder(abbr)} labelColor={teamColor(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "net") : undefined} />
+              <Tile value={team.ppg != null ? team.ppg.toFixed(1) : "—"} label={STANDINGS_PHASE.v === "preseason" ? "PPG · Pre" : "PPG"} sub={rankOf(teams, team, "ppg", "desc")} borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "ppg") : undefined} />
+              <Tile value={team.oppPpg != null ? team.oppPpg.toFixed(1) : "—"} label={STANDINGS_PHASE.v === "preseason" ? "Opp PPG · Pre" : "Opp PPG"} sub={rankOf(teams, team, "oppPpg", "asc")} borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "oppPpg") : undefined} />
+              <Tile value={team.ppg != null && team.oppPpg != null ? ((team.ppg - team.oppPpg) > 0 ? "+" : "") + (team.ppg - team.oppPpg).toFixed(1) : "—"} label="Net" valueClass={team.ppg != null && team.oppPpg != null ? ((team.ppg - team.oppPpg) > 0 ? "text-green-600 dark:text-green-400" : (team.ppg - team.oppPpg) < 0 ? "text-red-500" : "text-slate-900 dark:text-white") : undefined} sub={rankOf(teams.map((t) => ({ ...t, net: t.ppg != null && t.oppPpg != null ? t.ppg - t.oppPpg : null })), { ...team, net: team.ppg != null && team.oppPpg != null ? team.ppg - team.oppPpg : null }, "net", "desc")} borderColor={tileBorder(abbr)} labelColor={teamInk(abbr)} onClick={onJumpToTeamStats ? () => onJumpToTeamStats(team, "net") : undefined} />
             </>
           )}
         </div>
