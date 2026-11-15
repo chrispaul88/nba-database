@@ -4345,47 +4345,118 @@ button.rounded-full.border-slate-200 { border-color: #cbd5e1; box-shadow: 0 1px 
 @media (prefers-color-scheme: dark) { button.rounded-full.border-slate-200 { border-color: #334155; box-shadow: 0 1px 2px rgba(0,0,0,.4); } }
 button.rounded-full.text-white { box-shadow: 0 2px 6px rgba(15,23,42,.18); }
 `;
-// ── News strip: the latest injury updates and transactions, one at a time, above the tab bar ──
-function NewsTicker({ players, teams, onPlayer, onTeam, tick }) {
+// ── Bottom line: scores with each team's top performer, long-term injuries, and trades ──
+// One item at a time, held for a few seconds, like a TV score bug. Not every injury:
+// only players who are out for weeks.
+function longTermNote(r) {
+  if (!/out/i.test(String(r.status || ""))) return null;
+  const text = String(r.comment || "");
+  const part = r.detail ? String(r.detail).replace(/\s+/g, " ").trim() : "";
+  let span = null;
+  const days = r.returnDate ? Math.round((new Date(r.returnDate).getTime() - Date.now()) / 86400000) : null;
+  const m = text.match(/(?:at least |about |approximately |roughly |up to )?((?:\d+|a|one|two|three|four|five|six|eight|ten|several|multiple|a few)(?:\s*(?:-|–|to)\s*(?:\d+|two|three|four|five|six|eight|ten|twelve))?)\s+(weeks?|months?)/i);
+  if (/(rest of|remainder of) the (\d{4}-\d{2,4} )?season|season-ending|out for the season/i.test(text)) span = "out for the season";
+  else if (m && !(/^(a|one|1)$/i.test(m[1]) && /^week/i.test(m[2]))) span = "out " + m[1].toLowerCase().replace(/\s*(-|–|to)\s*/, "–") + " " + m[2].toLowerCase();
+  else if (days != null && days >= 14) span = "out about " + (days >= 60 ? Math.round(days / 30) + " months" : Math.round(days / 7) + " weeks");
+  else if (/indefinitely|no timetable/i.test(text)) span = "out indefinitely";
+  else if (/surgery/i.test(text) && !(days != null && days < 14)) span = "out after surgery";
+  if (!span) return null;
+  const back = days != null && days >= 14 && !/season/.test(span) ? " · est. return " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+  return (part ? part + " · " : "") + span + back;
+}
+function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
   const [tx, setTx] = useState([]);
+  const [today, setToday] = useState([]);
+  const [yday, setYday] = useState([]);
   const [i, setI] = useState(0);
   useEffect(() => {
     let alive = true;
-    const load = () => fetch("/api/transactions").then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && d.records && setTx(d.records)).catch(() => {});
-    load(); const iv = setInterval(load, 10 * 60 * 1000);
-    return () => { alive = false; clearInterval(iv); };
+    const get = (url, set) => fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && set(d)).catch(() => {});
+    const scores = () => get("/api/scoreboard", (d) => d.games && setToday(d.games));
+    const trades = () => get("/api/transactions", (d) => d.records && setTx(d.records));
+    const y = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })); y.setDate(y.getDate() - 1);
+    get("/api/scoreboard?date=" + y.getFullYear() + String(y.getMonth() + 1).padStart(2, "0") + String(y.getDate()).padStart(2, "0"), (d) => d.games && setYday(d.games));
+    scores(); trades();
+    const a = setInterval(scores, 60000), b = setInterval(trades, 10 * 60 * 1000);
+    return () => { alive = false; clearInterval(a); clearInterval(b); };
   }, []);
-  const since = Date.now() - 3 * 86400000;
   const nick = (name) => { const w = String(name || "").trim().split(" "); return /trail/i.test(name) ? "Trail Blazers" : w[w.length - 1] || ""; };
-  const items = [];
+  // "N. Jokic: 26 pts, 8 reb" — the team's top scorer, plus anything else he led the team in
+  const starLine = (side) => {
+    const L = side.leaders || []; const of = (re) => L.find((l) => re.test(String(l.cat || "")));
+    const pts = of(/^p|point/i); if (!pts || !pts.name) return null;
+    const bits = [pts.value + " pts"];
+    for (const [re, lbl] of [[/^r|reb/i, "reb"], [/^a|ast|assist/i, "ast"]]) { const l = of(re); if (l && l.name === pts.name) bits.push(l.value + " " + lbl); }
+    return `${pts.name}: ${bits.join(", ")}`;   // sits on the same row as his team's score
+  };
+  const gameItem = (g, tag) => {
+    const live = g.state === "in", done = g.state === "post";
+    const status = live ? (g.detail || "LIVE") : done ? (tag || "FINAL") : new Date(g.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const lines = live || done ? [starLine(g.away), starLine(g.home)].filter(Boolean) : [`${g.away.abbr} ${g.away.record ? "(" + g.away.record + ")" : ""} at ${g.home.abbr} ${g.home.record ? "(" + g.home.record + ")" : ""}`, [g.broadcast, g.odds && g.odds.details].filter(Boolean).join(" · ")].filter(Boolean);
+    return { key: "g" + g.id, type: "game", g, live, done, status, lines };
+  };
+  const started = today.filter((g) => g.state !== "pre");
+  const items = [
+    ...today.filter((g) => g.state === "in").map((g) => gameItem(g)),
+    ...today.filter((g) => g.state === "post").map((g) => gameItem(g)),
+    ...(started.length ? [] : yday.filter((g) => g.state === "post").map((g) => gameItem(g, "FINAL · YESTERDAY"))),
+    ...today.filter((g) => g.state === "pre").map((g) => gameItem(g)),
+  ];
+  const since = Date.now() - 4 * 86400000;
+  const news = [];
   for (const r of Object.values(INJ_BY_NAME)) {
-    if (!r.date || new Date(r.date).getTime() < since || !r.status) continue;
-    const ab = toAbbr(r.team) || "";
-    const ret = r.returnDate ? " Expected back " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) + "." : "";
-    items.push({ key: "i" + (r.id || r.name), date: r.date, ab, head: `${nick(r.team)} · ${r.name} · ${r.status}`, body: (r.comment || (r.detail ? r.detail + "." : "Listed as " + r.status + ".")) + (r.comment ? "" : ret), name: r.name, hot: /out|doubt/i.test(r.status) });
+    if (!r.date || new Date(r.date).getTime() < since) continue;
+    const note = longTermNote(r); if (!note) continue;
+    news.push({ key: "i" + (r.id || r.name), type: "news", date: r.date, ab: toAbbr(r.team) || "", head: `${nick(r.team)} · ${r.name}`, tag: "INJURY", body: note.charAt(0).toUpperCase() + note.slice(1), name: r.name, hot: true });
   }
   for (const r of tx) {
-    if (!r.date || new Date(r.date).getTime() < since || !r.text) continue;
-    items.push({ key: "t" + r.id, date: r.date, ab: r.team, head: `${nick(r.teamName) || r.team} · ${r.kind && !/other/i.test(r.kind) ? r.kind : "Transaction"}`, body: r.text });
+    if (!r.date || new Date(r.date).getTime() < since || !r.text || !/trade/i.test(String(r.kind || ""))) continue;
+    news.push({ key: "t" + r.id, type: "news", date: r.date, ab: r.team, head: nick(r.teamName) || r.team, tag: "TRADE", body: r.text });
   }
-  items.sort((a, b) => new Date(b.date) - new Date(a.date));
-  const list = items.slice(0, 30);
+  news.sort((a, b) => new Date(b.date) - new Date(a.date));
+  // a headline after every three scores, so news isn't stuck at the end of a 12-game night
+  const list = []; const nq = news.slice(0, 12); let gi = 0;
+  while (gi < items.length || nq.length) { for (let k = 0; k < 3 && gi < items.length; k++) list.push(items[gi++]); if (nq.length) list.push(nq.shift()); }
   const n = list.length;
-  const still = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const cur = n ? list[i % n] : null;
-  useEffect(() => { if (!still || !n) return; const t = setTimeout(() => setI((x) => x + 1), 6000); return () => clearTimeout(t); }, [still, n, i]);
-  if (!cur) return null;
-  const secs = Math.max(9, Math.round(cur.body.length * 0.13) + 5);          // longer write-ups scroll longer, same speed
+  useEffect(() => { if (n < 2) return; const t = setTimeout(() => setI((x) => x + 1), 5500); return () => clearTimeout(t); }, [n, i]);
+  if (!n) return null;
+  const cur = list[i % n];
+  const logoOf = (ab) => TEAM_LOGOS[modernAbbr(ab)] || TEAM_LOGOS[ab];
+  const shell = "w-full flex items-center h-11 text-left bg-slate-950 border-t border-slate-800 overflow-hidden";
+  const css = <style>{`@keyframes newsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } } @media (prefers-reduced-motion: reduce) { .newsIn { animation: none !important; } }`}</style>;
+  if (cur.type === "game") {
+    const g = cur.g; const aw = cur.done && (g.away.score ?? 0) > (g.home.score ?? 0), hw = cur.done && (g.home.score ?? 0) > (g.away.score ?? 0);
+    const Row = ({ side, win }) => (
+      <span className={"flex items-center gap-1.5 leading-none " + (win ? "text-amber-300" : cur.done ? "text-white/70" : "text-white")}>
+        {logoOf(side.abbr) ? <img src={logoOf(side.abbr)} alt="" className="w-4 h-4 object-contain" style={logoTrim(side.abbr)} /> : <span className="w-4 h-4" />}
+        <span className="w-9 text-[12px] font-extrabold tracking-wide">{side.abbr}</span>
+        <span className="w-7 text-right text-[12px] font-extrabold tabular-nums">{g.state === "pre" ? "" : side.score ?? ""}</span>
+      </span>
+    );
+    return (
+      <button onClick={() => onGame(g)} className={shell}>
+        {css}
+        <span className="self-stretch flex flex-col justify-center px-2 bg-slate-900 border-r border-slate-800 text-[8px] font-extrabold tracking-widest text-white/60 leading-tight text-right shrink-0"><span>NBA</span><span>SCORES</span></span>
+        <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2.5 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
+          <span className="flex flex-col gap-1 shrink-0"><Row side={g.away} win={aw} /><Row side={g.home} win={hw} /></span>
+          <span className={"shrink-0 text-[9px] font-extrabold tracking-wider uppercase text-center leading-tight max-w-[64px] " + (cur.live ? "text-red-400" : "text-amber-300")}>{cur.status}</span>
+          <span className="flex-1 min-w-0 flex flex-col gap-0.5 border-l border-slate-800 pl-2.5">
+            {cur.lines.map((t, k) => <span key={k} className="text-[11px] font-semibold text-white truncate leading-tight">{t}</span>)}
+          </span>
+        </span>
+      </button>
+    );
+  }
   const open = () => { const p = cur.name && (players || []).find((x) => espnNrm(x.name) === espnNrm(cur.name)); if (p) return onPlayer(p); const t = (teams || []).find((x) => sameAbbr(x.abbr || toAbbr(x.name), cur.ab)); if (t) onTeam(t); };
-  const logo = TEAM_LOGOS[modernAbbr(cur.ab)] || TEAM_LOGOS[cur.ab];
   return (
-    <button onClick={open} className="w-full flex items-center gap-2 h-10 pl-2 pr-0 text-left bg-slate-950 border-b border-slate-800 overflow-hidden" style={{ boxShadow: "inset 3px 0 0 " + (cur.hot ? "#DC2626" : teamInk(cur.ab)) }}>
-      <style>{`@keyframes newsScroll { from { transform: translateX(0); } to { transform: translateX(-100%); } }`}</style>
-      {logo ? <img src={logo} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : <span className="w-7 h-7 shrink-0" />}
-      <span className="flex-1 min-w-0 overflow-hidden">
-        <span className="block text-[10px] font-extrabold tracking-wide uppercase text-white truncate leading-tight">{cur.head}</span>
-        <span className="block overflow-hidden leading-tight">
-          <span key={cur.key + "-" + i} className={"inline-block whitespace-nowrap text-[11px] text-white/90 " + (still ? "truncate max-w-full" : "")} style={still ? undefined : { animation: `newsScroll ${secs}s linear 1`, paddingLeft: "45%" }} onAnimationEnd={() => setI((x) => x + 1)}>{cur.body}</span>
+    <button onClick={open} className={shell}>
+      {css}
+      <span className={"self-stretch flex flex-col justify-center px-2 border-r border-slate-800 text-[8px] font-extrabold tracking-widest leading-tight text-right shrink-0 " + (cur.hot ? "bg-red-700 text-white" : "bg-slate-900 text-white/60")}><span>NBA</span><span>{cur.tag}</span></span>
+      <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
+        {logoOf(cur.ab) ? <img src={logoOf(cur.ab)} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : null}
+        <span className="flex-1 min-w-0">
+          <span className="block text-[11px] font-extrabold tracking-wide uppercase text-white truncate leading-tight">{cur.head}</span>
+          <span className="block text-[11px] text-white/90 truncate leading-tight mt-0.5">{cur.body}</span>
         </span>
       </span>
     </button>
@@ -4538,9 +4609,9 @@ export default function App() {
       {players && tab === "players" && <PlayersHub players={players} teams={teams} onSelect={setSel} injury={injury} />}
       {players && tab === "stats" && <StatsTab players={players} teams={teams} onSelect={setSel} focus={statsFocus} onBackToPlayer={() => { const f = statsFocus; if (!f) return; setStatsFocus(null); if (f.teamId) { const t = (teams || []).find((x) => x.id === f.teamId); setTab(f.from?.tab || "teams"); setSelTeam(t || null); return; } const pl = (players || []).find((x) => x.id === f.id); if (pl) { if (f.from) { setTab(f.from.tab); setSelTeam(f.from.team || null); } setSel(pl); } }} />}
 
-      <div className="h-10" />{/* room for the news strip */}
+      <div className="h-11" />{/* room for the bottom line */}
       <div className="fixed bottom-0 inset-x-0 z-20">
-        {players && <NewsTicker players={players} teams={teams} tick={injury.feed ? injury.feed.updatedAt : 0} onPlayer={(p) => setSel(p)} onTeam={(t) => { setSel(null); setSelGame(null); setSelTeam(t); }} />}
+        {players && <NewsTicker players={players} teams={teams} tick={injury.feed ? injury.feed.updatedAt : 0} onPlayer={(p) => setSel(p)} onTeam={(t) => { setSel(null); setSelGame(null); setSelTeam(t); }} onGame={(g) => { setSel(null); setSelTeam(null); setTab("tonight"); setSelGame(g); }} />}
       <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex pb-[env(safe-area-inset-bottom)]">
         {TABS.map((t) => (
           <button
