@@ -45,8 +45,33 @@ function side(comp, homeAway) {
   };
 }
 
+// NBA Cup nights by season start year. Group nights, then quarterfinals / semifinals / final.
+const CUP_DATES = {
+  2026: { group: ["20261030", "20261106", "20261113", "20261120", "20261124", "20261125", "20261127"], qf: ["20261204", "20261205"], sf: ["20261208", "20261209"], final: ["20261211"] },
+};
+
 export default async function handler(req, res) {
   try {
+    // ── /api/scoreboard?cup=2026 → every game played on an NBA Cup night, compact ──
+    if (req.query && req.query.cup) {
+      const cfg = CUP_DATES[Number(req.query.cup)];
+      if (!cfg) return res.status(404).json({ error: "No NBA Cup dates on file for " + req.query.cup });
+      const today = easternYmd();
+      const days = Object.entries(cfg).flatMap(([round, list]) => list.map((d) => [round, d])).filter(([, d]) => d <= today);   // nights that have arrived
+      const out = [];
+      const got = await Promise.all(days.map(([, d]) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${d}`).catch(() => null)));
+      let failed = 0;
+      got.forEach((d, i) => {
+        if (!d) { failed++; return; }
+        for (const ev of d.events || []) {
+          const comp = (ev.competitions || [])[0] || {}; const type = (comp.status || ev.status || {}).type || {};
+          const sd = (ha) => { const c = (comp.competitors || []).find((x) => x.homeAway === ha) || {}; const raw = String(c.team?.abbreviation || "").toUpperCase(); return { abbr: ABBR_FIX[raw] || raw, score: c.score != null && c.score !== "" ? Number(c.score) : null }; };
+          out.push({ id: ev.id, date: ev.date, night: days[i][1], round: days[i][0], state: type.state || "pre", completed: !!type.completed, detail: type.shortDetail || type.detail || "", home: sd("home"), away: sd("away"), note: (comp.notes || [])[0]?.headline || null });
+        }
+      });
+      res.setHeader("Cache-Control", failed ? "s-maxage=20" : "s-maxage=60, stale-while-revalidate=300");
+      return res.status(200).json({ cup: Number(req.query.cup), dates: cfg, games: out, failed, updatedAt: new Date().toISOString() });
+    }
     const date = req.query && req.query.date && /^\d{8}$/.test(req.query.date) ? req.query.date : easternYmd();
     const d = await getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${date}`);
 
