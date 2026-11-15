@@ -8,7 +8,7 @@ export const config = { maxDuration: 60 };
 // Optional: ?season=2027 (ESPN's season = the year it ends) · ?seasontype=1 for preseason
 
 async function getJson(url) {
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const r = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(`HTTP ${r.status} from ${url}`);
   return r.json();
 }
@@ -103,6 +103,62 @@ async function eventsBetween(from, to) {
   return out;
 }
 
+
+// One date range (yyyymmdd–yyyymmdd) of finished regular-season games → raw totals.
+async function buildRange(f, t) {
+  const day = (x) => new Date(Date.UTC(Number(x.slice(0, 4)), Number(x.slice(4, 6)) - 1, Number(x.slice(6, 8))));
+  const events = await eventsBetween(day(f), day(t));
+  const done = events.filter((e) => (e.season?.type == null || e.season.type === 2) && e.competitions?.[0]?.status?.type?.completed);
+  done.sort((x, y) => new Date(x.date) - new Date(y.date));
+  const tot = {}, teamTot = {}; let failed = 0;
+  const addGame = (s) => {
+    // team line for this game (REB/AST/STL/BLK/TO/FG from the team box, PTS from the header score)
+    for (const tb of s?.boxscore?.teams || []) {
+      const raw = String(tb.team?.abbreviation || "").toUpperCase(); const ab = ABBR_FIX[raw] || raw;
+      const T = teamTot[ab] || (teamTot[ab] = { gp: 0, pts: 0, reb: 0, oreb: 0, dreb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, p3m: 0, p3a: 0, ftm: 0, fta: 0 });
+      T.gp += 1;
+      const comp = (s.header?.competitions || [])[0] || {};
+      const me = (comp.competitors || []).find((c) => String(c.team?.id) === String(tb.team?.id));
+      T.pts += Number(me?.score) || 0;
+      // what this team ALLOWED (the other team's line) — for the cheat sheet
+      const other = (s?.boxscore?.teams || []).find((x) => String(x.team?.id) !== String(tb.team?.id));
+      if (other) { const oc = (comp.competitors || []).find((cc) => String(cc.team?.id) === String(other.team?.id)); T.oppPts = (T.oppPts || 0) + (Number(oc?.score) || 0);
+        for (const st of other.statistics || []) { const k = TEAM_BOX[(st.abbreviation || "").toUpperCase()] || TEAM_BOX[String(st.label || "").toUpperCase()] || TEAM_BOX[String(st.name || "").toUpperCase()]; if (!k || k === "fgm") continue;
+          if (k.endsWith("_")) { const [m, att] = splitMade(st.displayValue); const pfx = k.slice(0, -1); T["opp_" + pfx + "m"] = (T["opp_" + pfx + "m"] || 0) + m; T["opp_" + pfx + "a"] = (T["opp_" + pfx + "a"] || 0) + att; }
+          else T["opp_" + k] = (T["opp_" + k] || 0) + (Number(st.displayValue) || 0); } }
+      for (const st of tb.statistics || []) {
+        const k = TEAM_BOX[(st.abbreviation || "").toUpperCase()] || TEAM_BOX[String(st.label || "").toUpperCase()] || TEAM_BOX[String(st.name || "").toUpperCase()];
+        if (!k) continue;
+        if (k === "fgm") continue;   // ESPN's "fieldGoalsMade-fieldGoalsAttempted" comes through FG
+        if (k.endsWith("_")) { const [m, att] = splitMade(st.displayValue); const pfx = k.slice(0, -1); T[pfx + "m"] += m; T[pfx + "a"] += att; }
+        else T[k] += Number(st.displayValue) || 0;
+      }
+    }
+    for (const tb of s?.boxscore?.players || []) {
+      const grp = (tb.statistics || [])[0] || {}; const cols = grp.names || grp.labels || [];
+      const raw = String(tb.team?.abbreviation || "").toUpperCase();
+      for (const a of grp.athletes || []) {
+        if (a.didNotPlay) continue;
+        const name = a.athlete?.displayName || "";
+        let rec = tot[nrm(name)];
+        if (!rec) { rec = { id: a.athlete?.id, name, team: ABBR_FIX[raw] || raw, pos: a.athlete?.position?.abbreviation || "", headshot: a.athlete?.headshot?.href || null, gp: 0, tot: Object.fromEntries(["min", "pts", "reb", "oreb", "dreb", "ast", "stl", "blk", "tov", "fgm", "fga", "p3m", "p3a", "ftm", "fta"].map((k) => [k, 0])), live: false }; tot[nrm(name)] = rec; }
+        rec.gp += 1;
+        cols.forEach((c, i) => {
+          const k = BOX[c]; if (!k) return; const v = a.stats?.[i];
+          if (k.endsWith("_")) { const [m, att] = splitMade(v); const pfx = k.slice(0, -1); rec.tot[pfx + "m"] += m; rec.tot[pfx + "a"] += att; }
+          else rec.tot[k] += Number(v) || 0;
+        });
+      }
+    }
+  };
+  for (let i = 0; i < done.length; i += 20) {
+    const sums = await Promise.all(done.slice(i, i + 20).map((e) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${e.id}`).catch(() => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${e.id}`).catch(() => null))));
+    for (const s of sums) { if (s && s.boxscore) addGame(s); else failed++; }
+  }
+  const pending = events.filter((e) => (e.season?.type == null || e.season.type === 2) && !e.competitions?.[0]?.status?.type?.completed && e.competitions?.[0]?.status?.type?.state !== "post").length;
+  return { from: f, to: t, gamesSeen: events.length, gamesUsed: done.length - failed, failed, pending, tot, teamTot };
+}
+
 export default async function handler(req, res) {
   try {
     const now = new Date();
@@ -146,6 +202,15 @@ export default async function handler(req, res) {
       for (const r of Object.values(logs)) r.g.sort((x, y) => new Date(x.d) - new Date(y.d));
       res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=1800");
       return res.status(200).json({ days, from: from.toISOString(), games: done.length, scanned: events.length, players: Object.values(logs), updatedAt: new Date().toISOString() });
+    }
+    // ── one 7-day piece of the season (called by the default mode below) ──
+    if (req.query?.chunk) {
+      const m = /^(\d{8})-(\d{8})$/.exec(String(req.query.chunk)); if (!m) return res.status(400).json({ error: "chunk=yyyymmdd-yyyymmdd" });
+      const out = await buildRange(m[1], m[2]);
+      const endDay = new Date(Date.UTC(Number(m[2].slice(0, 4)), Number(m[2].slice(4, 6)) - 1, Number(m[2].slice(6, 8))));
+      const settled = Date.now() - endDay.getTime() > 2 * 86400000 && !out.failed && out.gamesUsed > 0 && !out.pending;   // week is over and every box score was read
+      res.setHeader("Cache-Control", settled ? "s-maxage=604800, stale-while-revalidate=604800" : "s-maxage=120, stale-while-revalidate=600");
+      return res.status(200).json(out);
     }
     if (req.query?.recap) {
       const out = await recap(Math.min(60, Math.max(1, Number(req.query.recap) || 7)));
@@ -193,8 +258,9 @@ export default async function handler(req, res) {
     // 1) Season averages for everyone. ESPN puts the column names on the
     //    top-level categories and only the values on each athlete.
     let tot = {};   // name → { gp, min_t, pts_t, … } running totals
-    const young = maxTeamGP <= 25;        // early season: box scores only, don't even ask ESPN's table
-    let page = 1, more = !young;
+    const young = true;                   // box scores are the source all season; the table is only a fallback
+    const readTable = async () => {
+    let page = 1, more = true;
     while (more && page <= 3) {
       const d = await getJson(base + `&page=${page}`);
       const catNames = {};
@@ -218,73 +284,48 @@ export default async function handler(req, res) {
       more = pg.page != null && pg.pages != null ? pg.page < pg.pages : (d.athletes || []).length >= 1000;
       page++;
     }
+    };
 
     // Sanity: if ESPN handed back a different season (early in the year its
     // table can still point at last spring's playoffs), nobody's GP would fit
     // the standings. In that case rebuild from this season's box scores.
-    const stale = Object.values(tot).some((r) => r.gp > maxTeamGP + 1) || (maxTeamGP > 0 && !Object.values(tot).some((r) => r.gp > 0));
-    const fromBox = stale || young;             // early season: box scores are the ground truth anyway
-    let gamesUsed = 0, gamesSeen = 0;
+    const fromBox = young;             // early season: box scores are the ground truth anyway
+    let gamesUsed = 0, gamesSeen = 0, gamesFailed = 0;
     const teamTot = {};
     if (fromBox) {
+      // The season is split into 7-day pieces. Each piece is its own request to this
+      // same function (?chunk=…), so finished weeks are answered from Vercel's cache
+      // and only the current week is rebuilt. One run never reads the whole season.
       tot = {};
-      const start = new Date(season - 1, 9, 14), end = new Date();
+      const start = new Date(Date.UTC(season - 1, 9, 14)), end = new Date();
       const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
-      let events = [];
-      try { events = (await getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ymd(start)}-${ymd(end)}&limit=1000`)).events || []; } catch {}
-      if (!events.length) {   // some ESPN edges reject a range: walk day by day (capped)
-        for (let d = new Date(start), n = 0; d <= end && n < 60; d.setDate(d.getDate() + 1), n++) {
-          try { events.push(...((await getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ymd(d)}`)).events || [])); } catch {}
+      const ranges = [];
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 7 * 86400000)) {
+        ranges.push([ymd(d), ymd(new Date(d.getTime() + 6 * 86400000))]);   // fixed week edges → the same address every time, so it caches
+      }
+      const host = req.headers["x-forwarded-host"] || req.headers.host;
+      const parts = await Promise.all(ranges.map(async ([f, t]) => {
+        try {
+          const r = await fetch(`https://${host}/api/season-stats?chunk=${f}-${t}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(40000) });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const j = await r.json(); if (!j || !j.tot) throw new Error("bad chunk");
+          return j;
+        } catch { try { return await buildRange(f, t); } catch { return { tot: {}, teamTot: {}, gamesSeen: 0, gamesUsed: 0, failed: 1 }; } }
+      }));
+      for (const part of parts) {          // oldest → newest, so a traded player ends on his current team
+        gamesSeen += part.gamesSeen || 0; gamesUsed += part.gamesUsed || 0; gamesFailed += part.failed || 0;
+        for (const [k, r] of Object.entries(part.tot || {})) {
+          const have = tot[k];
+          if (!have) { tot[k] = { ...r, tot: { ...r.tot } }; continue; }
+          have.gp += r.gp; have.team = r.team; have.id = r.id || have.id; have.pos = r.pos || have.pos; have.headshot = r.headshot || have.headshot;
+          for (const [sk, v] of Object.entries(r.tot || {})) have.tot[sk] = (have.tot[sk] || 0) + (Number(v) || 0);
+        }
+        for (const [ab, T] of Object.entries(part.teamTot || {})) {
+          const have = teamTot[ab] || (teamTot[ab] = {});
+          for (const [sk, v] of Object.entries(T)) if (typeof v === "number") have[sk] = (have[sk] || 0) + v;
         }
       }
-      gamesSeen = events.length;
-      const done = events.filter((e) => (e.season?.type == null || e.season.type === 2) && e.competitions?.[0]?.status?.type?.completed);
-      gamesUsed = done.length;
-      const addGame = (s) => {
-        // team line for this game (REB/AST/STL/BLK/TO/FG from the team box, PTS from the header score)
-        for (const tb of s?.boxscore?.teams || []) {
-          const raw = String(tb.team?.abbreviation || "").toUpperCase(); const ab = ABBR_FIX[raw] || raw;
-          const T = teamTot[ab] || (teamTot[ab] = { gp: 0, pts: 0, reb: 0, oreb: 0, dreb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, p3m: 0, p3a: 0, ftm: 0, fta: 0 });
-          T.gp += 1;
-          const comp = (s.header?.competitions || [])[0] || {};
-          const me = (comp.competitors || []).find((c) => String(c.team?.id) === String(tb.team?.id));
-          T.pts += Number(me?.score) || 0;
-          // what this team ALLOWED (the other team's line) — for the cheat sheet
-          const other = (s?.boxscore?.teams || []).find((x) => String(x.team?.id) !== String(tb.team?.id));
-          if (other) { const oc = (comp.competitors || []).find((cc) => String(cc.team?.id) === String(other.team?.id)); T.oppPts = (T.oppPts || 0) + (Number(oc?.score) || 0);
-            for (const st of other.statistics || []) { const k = TEAM_BOX[(st.abbreviation || "").toUpperCase()] || TEAM_BOX[String(st.label || "").toUpperCase()] || TEAM_BOX[String(st.name || "").toUpperCase()]; if (!k || k === "fgm") continue;
-              if (k.endsWith("_")) { const [m, att] = splitMade(st.displayValue); const pfx = k.slice(0, -1); T["opp_" + pfx + "m"] = (T["opp_" + pfx + "m"] || 0) + m; T["opp_" + pfx + "a"] = (T["opp_" + pfx + "a"] || 0) + att; }
-              else T["opp_" + k] = (T["opp_" + k] || 0) + (Number(st.displayValue) || 0); } }
-          for (const st of tb.statistics || []) {
-            const k = TEAM_BOX[(st.abbreviation || "").toUpperCase()] || TEAM_BOX[String(st.label || "").toUpperCase()] || TEAM_BOX[String(st.name || "").toUpperCase()];
-            if (!k) continue;
-            if (k === "fgm") continue;   // ESPN's "fieldGoalsMade-fieldGoalsAttempted" comes through FG
-            if (k.endsWith("_")) { const [m, att] = splitMade(st.displayValue); const pfx = k.slice(0, -1); T[pfx + "m"] += m; T[pfx + "a"] += att; }
-            else T[k] += Number(st.displayValue) || 0;
-          }
-        }
-        for (const tb of s?.boxscore?.players || []) {
-          const grp = (tb.statistics || [])[0] || {}; const cols = grp.names || grp.labels || [];
-          const raw = String(tb.team?.abbreviation || "").toUpperCase();
-          for (const a of grp.athletes || []) {
-            if (a.didNotPlay) continue;
-            const name = a.athlete?.displayName || "";
-            let rec = tot[nrm(name)];
-            if (!rec) { rec = { id: a.athlete?.id, name, team: ABBR_FIX[raw] || raw, pos: a.athlete?.position?.abbreviation || "", headshot: a.athlete?.headshot?.href || null, gp: 0, tot: Object.fromEntries(["min", "pts", "reb", "oreb", "dreb", "ast", "stl", "blk", "tov", "fgm", "fga", "p3m", "p3a", "ftm", "fta"].map((k) => [k, 0])), live: false }; tot[nrm(name)] = rec; }
-            rec.gp += 1;
-            cols.forEach((c, i) => {
-              const k = BOX[c]; if (!k) return; const v = a.stats?.[i];
-              if (k.endsWith("_")) { const [m, att] = splitMade(v); const pfx = k.slice(0, -1); rec.tot[pfx + "m"] += m; rec.tot[pfx + "a"] += att; }
-              else rec.tot[k] += Number(v) || 0;
-            });
-          }
-        }
-      };
-      for (let i = 0; i < done.length; i += 8) {
-        const chunk = done.slice(i, i + 8);
-        const sums = await Promise.all(chunk.map((e) => getJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${e.id}`).catch(() => null)));
-        sums.forEach(addGame);
-      }
+      if (!Object.keys(tot).length) { await readTable(); }   // box scores unavailable: fall back to ESPN's table
     }
 
     // 2) Live overlay: games in progress right now aren't in the averages
@@ -352,8 +393,9 @@ export default async function handler(req, res) {
       const opg = (k) => Math.round(((T[k] || 0) / g) * 10) / 10;
       teams[ab] = { gp: T.gp, live: !!T.live, oppPts: opg("oppPts"), opp3pm: opg("opp_p3m"), opp3pa: opg("opp_p3a"), opp3p: T.opp_p3a ? Math.round((T.opp_p3m / T.opp_p3a) * 1000) / 10 : null, oppReb: opg("opp_reb"), oppAst: opg("opp_ast"), oppFta: opg("opp_fta"), pts: pg("pts"), reb: pg("reb"), oreb: pg("oreb"), dreb: pg("dreb"), ast: pg("ast"), stl: pg("stl"), blk: pg("blk"), tov: pg("tov"), fga: pg("fga"), p3a: pg("p3a"), fta: pg("fta"), fg: pct("fgm", "fga"), p3: pct("p3m", "p3a"), ft: pct("ftm", "fta") };
     }
-    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=240"); // 2-minute window
-    return res.status(200).json({ season: `${season - 1}-${season}`, seasontype, source: fromBox ? "box scores" : "espn table", gamesSeen, gamesUsed, maxTeamGP, count: players.length, players, teams, updatedAt: new Date().toISOString() });
+    if (!players.length) { res.setHeader("Cache-Control", "no-store"); return res.status(503).json({ error: "No stats could be read from ESPN", gamesSeen, gamesUsed, gamesFailed }); }
+    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=3600"); // fresh for 2 minutes; an older copy is served while it rebuilds
+    return res.status(200).json({ season: `${season - 1}-${season}`, seasontype, source: gamesUsed ? "box scores" : "espn table", gamesSeen, gamesUsed, gamesFailed, maxTeamGP, count: players.length, players, teams, updatedAt: new Date().toISOString() });
   } catch (e) {
     return res.status(502).json({ error: String(e.message || e) });
   }
