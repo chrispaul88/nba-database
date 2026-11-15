@@ -772,11 +772,12 @@ function CompareView({ a, b, color, onSwap }) {
 // "Jalen Johnson: 6+ REB in 90% of games" — built from every box score in the
 // last 30 days. The line shown is the highest one he still clears ≥ 70% of the
 // time, with the next line up beside it so you can see where it drops off.
-const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [3, 4, 5, 6, 7, 8, 10, 12], ast: [2, 3, 4, 5, 6, 7, 8, 10], p3m: [1, 2, 3, 4, 5], pra: [15, 20, 25, 30, 35, 40, 45] };
-const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM", pra: "PTS+REB+AST" };
+const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [3, 4, 5, 6, 7, 8, 10, 12], ast: [2, 3, 4, 5, 6, 7, 8, 10], p3m: [1, 2, 3, 4, 5] };
+const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM" };
+const CS_STATS = ["pts", "reb", "ast", "p3m"];
 function CheatSheet({ games, teams, players, onSelect }) {
-  const [stat, setStat] = useState("pts");
-  const [floor, setFloor] = useState(70);                // hit-rate threshold for the headline line
+  const [pick, setPick] = useState(null);                // one team, or null for the whole slate
+  const [floor, setFloor] = useState(70);                // hit-rate threshold: 70% or 80%
   const [data, setData] = useState(null);
   const upcoming = (games || []).filter((g) => g.state !== "post");
   const slate = [];                                       // [{ ab, opp, home }] using ESPN's codes from the scoreboard
@@ -799,77 +800,101 @@ function CheatSheet({ games, teams, players, onSelect }) {
   const isB2B = (team, gameDate) => { const last = lastGameOf[team]; if (!last || !gameDate) return false; const y = etDay(gameDate); y.setDate(y.getDate() - 1); return etDay(last).toDateString() === y.toDateString(); };
   if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading this season's box scores for these teams… (10–20 seconds the first time)</div>;
   if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
-  const val = (gm) => (stat === "pra" ? gm.pts + gm.reb + gm.ast : gm[stat]);
-  // What tonight's opponent gives up in this stat, ranked against the league (1 = allows the most)
+  // What each opponent gives up per stat, ranked against the league (1 = allows the most)
   const TL = LIVE_STATS.teams || {};
-  const allowedOf = (t) => (!t ? null : stat === "pts" ? t.oppPts : stat === "reb" ? t.oppReb : stat === "ast" ? t.oppAst : stat === "p3m" ? t.opp3pm : (t.oppPts != null && t.oppReb != null && t.oppAst != null ? t.oppPts + t.oppReb + t.oppAst : null));
-  const leagueAllowed = Object.values(TL).filter((t) => t.gp > 0).map(allowedOf).filter((v) => v != null && v > 0);
+  const allowedOf = (t, k) => (!t ? null : k === "pts" ? t.oppPts : k === "reb" ? t.oppReb : k === "ast" ? t.oppAst : t.opp3pm);
   const oppLine = (ab) => TL[modernAbbr(ab)] || Object.entries(TL).find(([k]) => sameAbbr(k, ab))?.[1] || null;
-  const spotOf = (oppAb) => {
-    const v = allowedOf(oppLine(oppAb)); if (v == null || !(v > 0) || leagueAllowed.length < 10) return null;
-    const rank = leagueAllowed.filter((x) => x > v).length + 1, n = leagueAllowed.length;
-    const tier = rank <= 8 ? "great" : rank > n - 8 ? "tough" : "neutral";
-    const what = stat === "p3m" ? "threes" : stat === "pra" ? "PTS+REB+AST" : CS_LABEL[stat].toLowerCase() === "pts" ? "points" : stat === "reb" ? "rebounds" : "assists";
-    const note = rank === 1 ? `gives up the most ${what} in the league` : rank === n ? `gives up the fewest ${what} in the league` : rank <= 8 ? `${ordinal(rank)}-most ${what} allowed` : rank > n - 8 ? `${ordinal(n - rank + 1)}-fewest ${what} allowed` : `${ordinal(rank)} in ${what} allowed`;
-    return { v, rank, tier, note };
+  const tierOf = (oppAb, k) => {
+    const league = Object.values(TL).filter((t) => t.gp > 0).map((t) => allowedOf(t, k)).filter((v) => v != null && v > 0);
+    const v = allowedOf(oppLine(oppAb), k); if (v == null || !(v > 0) || league.length < 10) return null;
+    const rank = league.filter((x) => x > v).length + 1;
+    return rank <= 8 ? "great" : rank > league.length - 8 ? "tough" : null;
   };
-  const rows = [];
-  for (const rec of data.players) {
-    const slot = slotOf(rec.team); if (!slot) continue;
-    const gs = rec.g; if (gs.length < 3) continue;
-    const p = (players || []).find((x) => espnNrm(x.name) === espnNrm(rec.name));
-    if (p && healthOf(p) === "out") continue;
-    const vals = gs.map(val); const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const rates = CS_LINES[stat].map((L) => ({ L, pct: Math.round((vals.filter((v) => v >= L).length / vals.length) * 100) }));
-    const hits = rates.filter((r) => r.pct >= floor);
-    const best = hits.length ? hits[hits.length - 1] : null;          // highest line still cleared at the floor
-    if (!best) continue;
-    const next = rates[rates.indexOf(best) + 1] || null;
-    const recent = vals.slice(-5);
-    rows.push({ rec, p, avg, best, next, recent, gp: vals.length, min: gs.reduce((a, b) => a + b.min, 0) / gs.length, opp: slot.opp, home: slot.home, spot: spotOf(slot.opp), b2b: isB2B(rec.team, slot.date) });
+  // One block per team on the slate, in tip-off order
+  const blocks = [];
+  for (const g of upcoming.slice().sort((x, y) => new Date(x.date) - new Date(y.date))) for (const [me, them] of [["away", "home"], ["home", "away"]]) {
+    const ab = g[me].abbr, opp = g[them].abbr;
+    const rows = [];
+    for (const rec of data.players) {
+      if (!sameAbbr(rec.team, ab) || rec.g.length < 3) continue;
+      const p = (players || []).find((x) => espnNrm(x.name) === espnNrm(rec.name));
+      if (p && healthOf(p) === "out") continue;
+      const props = {}; let any = false;
+      for (const k of CS_STATS) {
+        const vals = rec.g.map((gm) => gm[k] || 0);
+        let best = null;
+        for (const L of CS_LINES[k]) { const pct = Math.round((vals.filter((v) => v >= L).length / vals.length) * 100); if (pct >= floor) best = { L, pct }; }
+        if (best) { props[k] = best; any = true; }
+      }
+      if (!any) continue;
+      rows.push({ rec, p, props, gp: rec.g.length, min: rec.g.reduce((x, y) => x + y.min, 0) / rec.g.length });
+    }
+    rows.sort((x, y) => y.min - x.min);
+    const lastRec = data.players.find((r) => sameAbbr(r.team, ab));
+    const tiers = CS_STATS.map((k) => [k, tierOf(opp, k)]);
+    blocks.push({ key: g.id + ab, ab, opp, home: me === "home", date: g.date, live: g.state === "in", rows, b2b: lastRec ? isB2B(lastRec.team, g.date) : false,
+      great: tiers.filter(([, t]) => t === "great").map(([k]) => CS_LABEL[k]), tough: tiers.filter(([, t]) => t === "tough").map(([k]) => CS_LABEL[k]) });
   }
-  // best lines first; ties broken by how reliable the next line still is
-  rows.sort((a, b) => b.best.L - a.best.L || (b.next?.pct ?? 0) - (a.next?.pct ?? 0) || b.avg - a.avg);
-  const pctCls = (pct) => (pct >= 90 ? "text-green-700 bg-green-100" : pct >= 80 ? "text-green-700 bg-green-50" : pct >= 70 ? "text-amber-700 bg-amber-100" : "text-slate-500 bg-slate-100");
+  const shown = pick && blocks.some((x) => x.ab === pick) ? blocks.filter((x) => x.ab === pick) : blocks;
+  const cellCls = (pct) => (pct >= 90 ? "bg-green-600 text-white" : pct >= 80 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800");
+  const pill = (on) => "shrink-0 px-3 py-1.5 rounded-full text-[11px] font-extrabold border " + (on ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800");
   return (
     <div className="px-4 pt-3 pb-28">
-      <div className="flex gap-1.5 mb-2">
-        {Object.keys(CS_LINES).map((k) => <button key={k} onClick={() => setStat(k)} className={"flex-1 py-1.5 rounded-full text-[10px] font-extrabold border " + (stat === k ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{k === "pra" ? "P+R+A" : CS_LABEL[k]}</button>)}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Props by team</span>
+        <span className="flex items-center gap-1"><span className="text-[10px] text-slate-400 mr-1">hits at least</span>{[70, 80].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2.5 py-1 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%</button>)}</span>
       </div>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Consistency · season</span>
-        <span className="flex gap-1">{[70, 80, 90].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2 py-0.5 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%+</button>)}</span>
+      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-1 -mx-4 px-4" style={{ scrollbarWidth: "none" }}>
+        <button onClick={() => setPick(null)} className={pill(!pick)}>All teams</button>
+        {blocks.map((x) => <button key={x.key} onClick={() => setPick(x.ab)} className={pill(pick === x.ab)}>{x.ab}</button>)}
       </div>
-      <div className="text-[10px] text-slate-400 mb-3 px-1">Green chip: the highest {CS_LABEL[stat]} line he clears in at least {floor}% of games, then the next line up. The tag under his name is tonight's matchup: how much the opponent gives up in this stat versus the league. Tiles on the right are his last 5 games. B2B = his team also played yesterday.</div>
-      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
-        {rows.slice(0, 40).map((r, i) => {
-          const ab = r.rec.team;
-          return (
-            <button key={r.rec.name} onClick={() => r.p && onSelect(r.p)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left active:bg-slate-50 dark:active:bg-slate-800" style={{ borderLeft: "4px solid " + teamColor(ab) }}>
-              {r.p ? <Avatar p={r.p} /> : <span className="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />}
-              <span className="flex-1 min-w-0">
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
-                  {r.p && isSidelined(r.p) && <StatusBadge status={effectiveStatus(r.p)} />}
-                  {r.b2b && <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold bg-orange-500 text-white">B2B</span>}
-                </span>
-                <span className="block text-[10px] text-slate-500 dark:text-slate-400 truncate">{ab} {r.home ? "vs" : "@"} {r.opp}{r.spot ? ` · ${r.opp} allows ${fmt1(r.spot.v)} ${stat === "pra" ? "P+R+A" : CS_LABEL[stat]}` : ""}</span>
-                {r.spot && <span className={"inline-block mt-1 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold " + (r.spot.tier === "great" ? "bg-green-100 text-green-700" : r.spot.tier === "tough" ? "bg-red-100 text-red-600" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300")}>{r.spot.tier === "great" ? "Great spot" : r.spot.tier === "tough" ? "Tough spot" : "Neutral"} · {r.opp} {r.spot.note}</span>}
-                <span className="flex items-center justify-between gap-2 mt-1.5">
-                  <span className="flex items-center gap-1.5 min-w-0">
-                    <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-extrabold whitespace-nowrap " + pctCls(r.best.pct)}>{r.best.L}+ {CS_LABEL[stat]} · {r.best.pct}%</span>
-                    {r.next && <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-bold whitespace-nowrap " + pctCls(r.next.pct)}>{r.next.L}+ · {r.next.pct}%</span>}
+      <div className="text-[10px] text-slate-400 mb-3 px-1">Each box is the highest line that player has cleared in at least {floor}% of his games this season, with the hit rate under it. A dash means no line clears {floor}%. Tap a player for his game log.</div>
+      {shown.map((x) => (
+        <div key={x.key} className="mb-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden" style={{ borderTop: "4px solid " + tileBorder(x.ab) }}>
+          <div className="px-3 pt-2.5 pb-2">
+            <div className="flex items-center gap-2">
+              {TEAM_LOGOS[modernAbbr(x.ab)] || TEAM_LOGOS[x.ab] ? <img src={TEAM_LOGOS[modernAbbr(x.ab)] || TEAM_LOGOS[x.ab]} alt="" className="w-7 h-7 object-contain shrink-0" /> : null}
+              <span className="text-[15px] font-extrabold text-slate-900 dark:text-white">{x.ab}</span>
+              <span className="text-[12px] font-semibold text-slate-500 dark:text-slate-400">{x.home ? "vs" : "@"} {x.opp}</span>
+              {x.b2b && <span className="px-1.5 py-0.5 rounded-full text-[9px] font-extrabold bg-orange-500 text-white">B2B</span>}
+              <span className={"ml-auto text-[12px] font-extrabold " + (x.live ? "text-red-500" : "text-slate-700 dark:text-slate-200")}>{x.live ? "LIVE" : new Date(x.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+            </div>
+            {(x.great.length > 0 || x.tough.length > 0) && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {x.great.length > 0 && <span className="px-1.5 py-0.5 rounded-md text-[9px] font-extrabold bg-green-100 text-green-700">{x.opp} gives up a lot of {x.great.join(", ")}</span>}
+                {x.tough.length > 0 && <span className="px-1.5 py-0.5 rounded-md text-[9px] font-extrabold bg-red-100 text-red-600">{x.opp} is stingy on {x.tough.join(", ")}</span>}
+              </div>
+            )}
+          </div>
+          {x.rows.length > 0 && (
+            <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-y border-slate-100 dark:border-slate-800">
+              <span className="flex-1 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">Player</span>
+              {CS_STATS.map((k) => <span key={k} className="w-[46px] text-center text-[9px] font-extrabold tracking-widest text-slate-400">{CS_LABEL[k]}</span>)}
+            </div>
+          )}
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {x.rows.map((r) => (
+              <button key={r.rec.name} onClick={() => r.p && onSelect(r.p)} className="w-full flex items-center gap-1 px-3 py-1.5 text-left active:bg-slate-50 dark:active:bg-slate-800">
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center gap-1 min-w-0">
+                    <span className="text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
+                    {r.p && isSidelined(r.p) && <StatusBadge status={effectiveStatus(r.p)} />}
                   </span>
-                  <span className="flex gap-0.5 shrink-0">
-                    {r.recent.map((v, k) => <span key={k} className={"w-5 h-5 rounded text-[8px] font-extrabold flex items-center justify-center " + (v >= r.best.L ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600")}>{v}</span>)}
-                  </span>
+                  <span className="block text-[10px] text-slate-400">{r.gp} games · {Math.round(r.min)} min</span>
                 </span>
-              </span>
-            </button>
-          );
-        })}
-        {rows.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">{upcoming.length === 0 ? "No games left on this day." : `Nothing to show. Checked ${data.scanned ?? 0} games since ${data.from ? new Date(data.from).toLocaleDateString([], { month: "short", day: "numeric" }) : "?"}, read ${data.games ?? 0} box scores, found ${data.players.length} players; ${slate.length} teams on this slate.`}</div>}
-      </div>
+                {CS_STATS.map((k) => { const b = r.props[k]; return (
+                  <span key={k} className={"w-[46px] h-9 rounded-lg flex flex-col items-center justify-center shrink-0 " + (b ? cellCls(b.pct) : "bg-slate-50 dark:bg-slate-800/50 text-slate-300 dark:text-slate-600")}>
+                    {b ? <><span className="text-[13px] font-extrabold leading-none tabular-nums">{b.L}+</span><span className="text-[9px] font-bold leading-none mt-0.5 tabular-nums">{b.pct}%</span></> : <span className="text-[12px] font-bold">–</span>}
+                  </span>
+                ); })}
+              </button>
+            ))}
+            {x.rows.length === 0 && <div className="text-center text-[11px] text-slate-400 py-4 px-3">No {x.ab} player clears a line {floor}% of the time yet.</div>}
+          </div>
+        </div>
+      ))}
+      {blocks.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">No games left on this day.</div>}
+      {blocks.length > 0 && data.players.length === 0 && <div className="text-center text-[11px] text-slate-400 py-2 px-4">Checked {data.scanned ?? 0} games since {data.from ? new Date(data.from).toLocaleDateString([], { month: "short", day: "numeric" }) : "?"} and read {data.games ?? 0} box scores for these teams.</div>}
     </div>
   );
 }
@@ -4166,8 +4191,8 @@ export default function App() {
         // Opp PPG. Airtable's numbers stay as the fallback if ESPN is down.
         // Live season stats (ESPN): this season's averages become each player's
         // top Stats row, replacing a hand-entered row for the same season.
-        const loadLive = () => fetch("/api/season-stats").then((r) => r.json()).then((ls) => {
-          if (!ls || !ls.players || !ls.players.length) return;
+        const applyLive = (ls) => {
+          if (!ls || !ls.players || !ls.players.length) return false;
           const by = {}; for (const r of ls.players) by[espnNrm(r.name)] = r;
           LIVE_STATS.updatedAt = ls.updatedAt; LIVE_STATS.season = CURRENT_SEASON;
           if (ls.teams) LIVE_STATS.teams = ls.teams;   // true team per-game lines (from box scores)
@@ -4179,7 +4204,15 @@ export default function App() {
             const rest = (p.stats || []).filter((x) => x.season !== CURRENT_SEASON);
             return { ...p, stats: [row, ...rest] };
           }));
-        }).catch(() => {});
+          return true;
+        };
+        // If ESPN or the function fails, keep showing the last copy that loaded on this phone
+        const lastGood = () => { try { return JSON.parse(localStorage.getItem("nba_live_stats") || "null"); } catch { return null; } };
+        let haveLive = false;
+        const loadLive = () => fetch("/api/season-stats").then((r) => (r.ok ? r.json() : null)).then((ls) => {
+          if (applyLive(ls)) { haveLive = true; try { localStorage.setItem("nba_live_stats", JSON.stringify(ls)); } catch {} }
+          else if (!haveLive && applyLive(lastGood())) haveLive = true;
+        }).catch(() => { if (!haveLive && applyLive(lastGood())) haveLive = true; });
         loadLive();
         setInterval(loadLive, 2 * 60 * 1000);                           // every 2 min while open
         document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") loadLive(); });
