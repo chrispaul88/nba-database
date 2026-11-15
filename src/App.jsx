@@ -2541,7 +2541,17 @@ function pickStartingFive(roster, abbr) {
   const nextUp = new Array(COURT_SLOTS.length).fill(false);
   const take = (i, p, stepped) => { assigned[i] = p; used.add(p.id); nextUp[i] = !!stepped; };
   const slotIdx = (lbl) => COURT_SLOTS.findIndex((s) => s.lbl === lbl);
-  const espnFive = espnStartersFor(roster, abbr);
+  let espnFive = espnStartersFor(roster, abbr);
+  // Last game's five is only a projection for the next game. Anyone ruled out since then
+  // comes off it, and the next man up (below) takes his slot. Once tonight's real starters
+  // post, that game's five is used exactly as played.
+  if (espnFive) {
+    const lu0 = lineupFor(abbr);
+    const et = (x) => new Date(new Date(x).toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const nbaDay = (x) => { const d = et(x); d.setHours(d.getHours() - 3); return d.toDateString(); };   // the NBA day rolls over at 3 AM Eastern
+    const fromToday = lu0 && lu0.date && nbaDay(lu0.date) === nbaDay(new Date());
+    if (!fromToday) espnFive = espnFive.filter((p) => healthOf(p) !== "out");
+  }
 
   if (espnFive) {
     // Confirmed lineup from ESPN's last box score: slot by position number,
@@ -2568,6 +2578,13 @@ function pickStartingFive(roster, abbr) {
     while (grp.F.length < 2 && grp.G.length > 2) grp.F.unshift(grp.G.pop());
     grp.F.sort(byScore);                                                    // SF = lower number, PF = higher
     grp.G.sort(byScore);                                                    // PG = lower number (1), SG = 2
+    // Two guards and no Airtable number on either: the one who runs the offense is the 1.
+    // Assists per game says that better than a position label (Nembhard next to Oubre).
+    if (grp.G.length === 2 && !SLOT_OF_SORT[Number(grp.G[0].sort)] && !SLOT_OF_SORT[Number(grp.G[1].sort)]) {
+      const ast = (p) => { const c = curStats(p); return c && c.gp >= 3 && c.ast != null ? c.ast : null; };
+      const a0 = ast(grp.G[0]), a1 = ast(grp.G[1]);
+      if (a0 != null && a1 != null && a1 - a0 >= 1) grp.G.reverse();
+    }
     // Your Airtable number wins first: a 1 is the point guard no matter how
     // tall he is (Dončić, Conley). Only the leftover starters go by ESPN's
     // G/F/C and height.
@@ -4328,6 +4345,53 @@ button.rounded-full.border-slate-200 { border-color: #cbd5e1; box-shadow: 0 1px 
 @media (prefers-color-scheme: dark) { button.rounded-full.border-slate-200 { border-color: #334155; box-shadow: 0 1px 2px rgba(0,0,0,.4); } }
 button.rounded-full.text-white { box-shadow: 0 2px 6px rgba(15,23,42,.18); }
 `;
+// ── News strip: the latest injury updates and transactions, one at a time, above the tab bar ──
+function NewsTicker({ players, teams, onPlayer, onTeam, tick }) {
+  const [tx, setTx] = useState([]);
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch("/api/transactions").then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && d.records && setTx(d.records)).catch(() => {});
+    load(); const iv = setInterval(load, 10 * 60 * 1000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+  const since = Date.now() - 3 * 86400000;
+  const nick = (name) => { const w = String(name || "").trim().split(" "); return /trail/i.test(name) ? "Trail Blazers" : w[w.length - 1] || ""; };
+  const items = [];
+  for (const r of Object.values(INJ_BY_NAME)) {
+    if (!r.date || new Date(r.date).getTime() < since || !r.status) continue;
+    const ab = toAbbr(r.team) || "";
+    const ret = r.returnDate ? " Expected back " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) + "." : "";
+    items.push({ key: "i" + (r.id || r.name), date: r.date, ab, head: `${nick(r.team)} · ${r.name} · ${r.status}`, body: (r.comment || (r.detail ? r.detail + "." : "Listed as " + r.status + ".")) + (r.comment ? "" : ret), name: r.name, hot: /out|doubt/i.test(r.status) });
+  }
+  for (const r of tx) {
+    if (!r.date || new Date(r.date).getTime() < since || !r.text) continue;
+    items.push({ key: "t" + r.id, date: r.date, ab: r.team, head: `${nick(r.teamName) || r.team} · ${r.kind && !/other/i.test(r.kind) ? r.kind : "Transaction"}`, body: r.text });
+  }
+  items.sort((a, b) => new Date(b.date) - new Date(a.date));
+  const list = items.slice(0, 30);
+  const n = list.length;
+  const still = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const cur = n ? list[i % n] : null;
+  useEffect(() => { if (!still || !n) return; const t = setTimeout(() => setI((x) => x + 1), 6000); return () => clearTimeout(t); }, [still, n, i]);
+  if (!cur) return null;
+  const secs = Math.max(9, Math.round(cur.body.length * 0.13) + 5);          // longer write-ups scroll longer, same speed
+  const open = () => { const p = cur.name && (players || []).find((x) => espnNrm(x.name) === espnNrm(cur.name)); if (p) return onPlayer(p); const t = (teams || []).find((x) => sameAbbr(x.abbr || toAbbr(x.name), cur.ab)); if (t) onTeam(t); };
+  const logo = TEAM_LOGOS[modernAbbr(cur.ab)] || TEAM_LOGOS[cur.ab];
+  return (
+    <button onClick={open} className="w-full flex items-center gap-2 h-10 pl-2 pr-0 text-left bg-slate-950 border-b border-slate-800 overflow-hidden" style={{ boxShadow: "inset 3px 0 0 " + (cur.hot ? "#DC2626" : teamInk(cur.ab)) }}>
+      <style>{`@keyframes newsScroll { from { transform: translateX(0); } to { transform: translateX(-100%); } }`}</style>
+      {logo ? <img src={logo} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : <span className="w-7 h-7 shrink-0" />}
+      <span className="flex-1 min-w-0 overflow-hidden">
+        <span className="block text-[10px] font-extrabold tracking-wide uppercase text-white truncate leading-tight">{cur.head}</span>
+        <span className="block overflow-hidden leading-tight">
+          <span key={cur.key + "-" + i} className={"inline-block whitespace-nowrap text-[11px] text-white/90 " + (still ? "truncate max-w-full" : "")} style={still ? undefined : { animation: `newsScroll ${secs}s linear 1`, paddingLeft: "45%" }} onAnimationEnd={() => setI((x) => x + 1)}>{cur.body}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("tonight"); // land on tonight's games
   const [sel, setSel] = useState(null);
@@ -4474,7 +4538,10 @@ export default function App() {
       {players && tab === "players" && <PlayersHub players={players} teams={teams} onSelect={setSel} injury={injury} />}
       {players && tab === "stats" && <StatsTab players={players} teams={teams} onSelect={setSel} focus={statsFocus} onBackToPlayer={() => { const f = statsFocus; if (!f) return; setStatsFocus(null); if (f.teamId) { const t = (teams || []).find((x) => x.id === f.teamId); setTab(f.from?.tab || "teams"); setSelTeam(t || null); return; } const pl = (players || []).find((x) => x.id === f.id); if (pl) { if (f.from) { setTab(f.from.tab); setSelTeam(f.from.team || null); } setSel(pl); } }} />}
 
-      <div className="fixed bottom-0 inset-x-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex pb-[env(safe-area-inset-bottom)] z-20">
+      <div className="h-10" />{/* room for the news strip */}
+      <div className="fixed bottom-0 inset-x-0 z-20">
+        {players && <NewsTicker players={players} teams={teams} tick={injury.feed ? injury.feed.updatedAt : 0} onPlayer={(p) => setSel(p)} onTeam={(t) => { setSel(null); setSelGame(null); setSelTeam(t); }} />}
+      <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex pb-[env(safe-area-inset-bottom)]">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -4485,6 +4552,7 @@ export default function App() {
             <div className="text-[10px] font-bold mt-1">{t.label}</div>
           </button>
         ))}
+      </div>
       </div>
     </div>
   );
