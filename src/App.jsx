@@ -4359,7 +4359,7 @@ function longTermPhrase(r) {
   if (/(rest|remainder) of the (\d{4}-\d{2,4} )?(regular )?season|season-ending|out for the season|miss the (entire )?season/i.test(text)) return "is out for the season";
   let m = text.match(new RegExp("re-?evaluated in (?:about |approximately |roughly )?" + SPAN, "i"));
   if (m && !oneWeek(m[1])) return "will be re-evaluated in " + tidy(m[1]);
-  if (days != null && days >= 14) return "is expected back around " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) + " (about " + (days >= 60 ? Math.round(days / 30) + " months" : Math.round(days / 7) + " weeks") + ")";
+  if (days != null && days >= 14) return "is out for about " + (days >= 60 ? Math.round(days / 30) + " months" : Math.round(days / 7) + " weeks");
   if (days != null) return null;                                   // ESPN expects him back within two weeks
   m = text.match(new RegExp("(?:miss|out|sidelined|shelved|sidelined for|absence of)(?: for)?(?: at least| about| approximately| roughly| the next| up to)? " + SPAN, "i"));
   if (m && !oneWeek(m[1])) return "is expected to miss " + tidy(m[1]);
@@ -4378,8 +4378,8 @@ function SlideText({ text, onNeed, className }) {
     onNeed(over > 4 ? 8000 : 5500);
   }, [text]);
   return (
-    <span ref={outer} className="block overflow-hidden">
-      <span ref={inner} className={"inline-block whitespace-nowrap " + (className || "")} style={{ transform: `translateX(-${shift}px)`, transition: shift ? `transform ${shift / 45}s linear` : "none" }}>{text}</span>
+    <span ref={outer} className="block overflow-hidden" style={{ lineHeight: 1.2, fontSize: 0 }}>
+      <span ref={inner} className={"inline-block align-top whitespace-nowrap " + (className || "")} style={{ transform: `translateX(-${shift}px)`, transition: shift ? `transform ${shift / 45}s linear` : "none" }}>{text}</span>
     </span>
   );
 }
@@ -4389,7 +4389,7 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
   const [yday, setYday] = useState([]);
   const [boxes, setBoxes] = useState({});      // game id → box score, for the full stat line
   const [i, setI] = useState(0);
-  const [hold, setHold] = useState(5500);
+  const [hold, setHold] = useState({ i: -1, ms: 5500 });
   useEffect(() => {
     let alive = true;
     const get = (url, set) => fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && set(d)).catch(() => {});
@@ -4426,7 +4426,8 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
         if (at(top, "AST") > 0) bits.push(at(top, "AST") + " ast");
         if (at(top, "STL") >= 2) bits.push(at(top, "STL") + " stl");
         if (at(top, "BLK") >= 2) bits.push(at(top, "BLK") + " blk");
-        return `${side.abbr} › ${top.name}: ${bits.join(", ")}`;
+        const full = `${side.abbr} › ${top.name}: ${bits.join(", ")}`;
+        return full.length > 40 ? `${side.abbr} › ${String(top.name).replace(/^[A-Z]\.\s+/, "")}: ${bits.join(", ")}` : full;   // long line: last name only
       }
     }
     const L = side.leaders || []; const of = (re) => L.find((l) => re.test(String(l.cat || "")));
@@ -4437,7 +4438,7 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
   };
   const gameItem = (g, yesterday) => {
     const live = g.state === "in", done = g.state === "post";
-    const status = live ? (g.detail || "LIVE") : done ? (yesterday ? "FINAL · YEST." : "FINAL") : new Date(g.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const status = live ? (g.detail || "LIVE") : done ? "FINAL" : new Date(g.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const lines = live || done ? [starLine(g, g.away), starLine(g, g.home)].filter(Boolean) : [`${g.away.abbr} ${g.away.record ? "(" + g.away.record + ")" : ""} at ${g.home.abbr} ${g.home.record ? "(" + g.home.record + ")" : ""}`, [g.broadcast, g.odds && g.odds.details].filter(Boolean).join(" · ")].filter(Boolean);
     return { key: "g" + g.id, type: "game", g, live, done, status, lines };
   };
@@ -4468,12 +4469,13 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
   while (gi < items.length || nq.length) { for (let k = 0; k < 3 && gi < items.length; k++) list.push(items[gi++]); if (nq.length) list.push(nq.shift()); }
   const n = list.length;
   const cur = n ? list[i % n] : null;
-  const wait = cur && cur.type === "news" ? hold : 5500;
+  const wait = hold.i === i ? hold.ms : 5500;
+  const need = (ms) => setHold((h) => (h.i === i ? { i, ms: Math.max(h.ms, ms) } : { i, ms }));   // the longest line on screen sets the pace
   useEffect(() => { if (n < 2) return; const t = setTimeout(() => setI((x) => x + 1), wait); return () => clearTimeout(t); }, [n, i, wait]);
   if (!cur) return null;
   const logoOf = (ab) => TEAM_LOGOS[modernAbbr(ab)] || TEAM_LOGOS[ab];
   const shell = "w-full flex items-center h-11 text-left bg-slate-950 border-t border-slate-800 overflow-hidden";
-  const tagBox = "self-stretch w-[68px] whitespace-nowrap flex flex-col justify-center px-1.5 bg-slate-900 border-r border-slate-800 text-[9px] font-extrabold tracking-wider leading-tight text-right shrink-0 uppercase";
+  const tagBox = "self-stretch w-[68px] whitespace-nowrap flex flex-col justify-center px-1.5 bg-slate-900 border-r border-slate-800 text-[9px] font-extrabold tracking-wider leading-tight text-center shrink-0 uppercase";
   const css = <style>{`@keyframes newsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } } @media (prefers-reduced-motion: reduce) { .newsIn { animation: none !important; } }`}</style>;
   if (cur.type === "game") {
     const g = cur.g; const aw = cur.done && (g.away.score ?? 0) > (g.home.score ?? 0), hw = cur.done && (g.home.score ?? 0) > (g.away.score ?? 0);
@@ -4490,7 +4492,7 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
         <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2.5 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
           <span className="flex flex-col gap-1 shrink-0"><Row side={g.away} win={aw} /><Row side={g.home} win={hw} /></span>
           <span className="flex-1 min-w-0 flex flex-col gap-0.5 border-l border-slate-800 pl-2.5">
-            {cur.lines.map((t, k) => <span key={k} className="text-[10.5px] font-semibold text-white truncate leading-tight">{t}</span>)}
+            {cur.lines.map((t, k) => <SlideText key={k} text={t} onNeed={need} className="text-[10.5px] font-semibold text-white leading-tight" />)}
           </span>
         </span>
       </button>
@@ -4503,7 +4505,7 @@ function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
       <span className={tagBox}>{cur.breaking ? <><span className="text-red-500">Breaking</span><span className="text-red-500">News</span></> : <><span className="text-white">NBA</span><span className="text-white">News</span></>}</span>
       <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
         {logoOf(cur.ab) ? <img src={logoOf(cur.ab)} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : null}
-        <span className="flex-1 min-w-0"><SlideText text={cur.text} onNeed={setHold} className="text-[12px] font-semibold text-white" /></span>
+        <span className="flex-1 min-w-0"><SlideText text={cur.text} onNeed={need} className="text-[12px] font-semibold text-white" /></span>
       </span>
     </button>
   );
