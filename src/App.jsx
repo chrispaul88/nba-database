@@ -2060,6 +2060,193 @@ function PlayoffBracket({ teams, onSelect }) {
   );
 }
 
+// ── NBA Cup: six group tables, the wildcard race, and the knockout bracket ──
+// Groups change every season, so they're listed here by the year the season starts.
+const NBA_CUP = {
+  2026: { finalSite: "Indianapolis · Dec 11", groups: {
+    "East A": ["DET", "TOR", "ORL", "MIL", "BKN"], "East B": ["NY", "CLE", "PHI", "MIA", "IND"], "East C": ["BOS", "ATL", "CHA", "CHI", "WSH"],
+    "West A": ["DEN", "HOU", "PHX", "DAL", "UTAH"], "West B": ["OKC", "MIN", "LAC", "NOP", "MEM"], "West C": ["SAS", "LAL", "POR", "GS", "SAC"] } },
+};
+const cupYear = () => { const d = new Date(); return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1; };
+const cupInSeason = () => { const d = new Date(); return (d.getMonth() === 9 && d.getDate() >= 25) || d.getMonth() === 10 || (d.getMonth() === 11 && d.getDate() <= 14); };
+function CupBracket({ teams, onSelect }) {
+  const year = cupYear(); const cfg = NBA_CUP[year];
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!cfg) return; let alive = true;
+    const load = () => fetch("/api/scoreboard?cup=" + year).then((r) => (r.ok ? r.json() : null)).then((d) => { if (alive && d && d.games) setData(d); else if (alive) setData((prev) => prev || { games: [], error: true }); }).catch(() => alive && setData((prev) => prev || { games: [], error: true }));
+    load(); const iv = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [year]);
+  if (!cfg) return <div className="mt-6 text-center text-xs text-slate-400">The {year} NBA Cup groups haven't been added yet.</div>;
+  if (!data) return <div className="mt-6 text-center text-xs text-slate-400">Loading NBA Cup games…</div>;
+  const teamOf = (ab) => (teams || []).find((t) => !isFaTeam(t) && sameAbbr(t.abbr || toAbbr(t.name), ab)) || null;
+  const groupOf = (ab) => Object.entries(cfg.groups).find(([, list]) => list.some((x) => sameAbbr(x, ab)))?.[0] || null;
+  const canon = (ab) => { const g = groupOf(ab); return g ? cfg.groups[g].find((x) => sameAbbr(x, ab)) : ab; };
+  // Group games: two group-mates meeting on a Cup night
+  const groupGames = data.games.filter((g) => g.round === "group" && groupOf(g.home.abbr) && groupOf(g.home.abbr) === groupOf(g.away.abbr));
+  const line = {}; for (const list of Object.values(cfg.groups)) for (const ab of list) line[ab] = { ab, w: 0, l: 0, pf: 0, pa: 0, beat: new Set(), live: false };
+  for (const g of groupGames) {
+    const h = line[canon(g.home.abbr)], a = line[canon(g.away.abbr)]; if (!h || !a) continue;
+    if (g.state === "in") { h.live = a.live = true; continue; }
+    if (!g.completed || g.home.score == null || g.away.score == null) continue;
+    h.pf += g.home.score; h.pa += g.away.score; a.pf += g.away.score; a.pa += g.home.score;
+    if (g.home.score > g.away.score) { h.w++; a.l++; h.beat.add(a.ab); } else { a.w++; h.l++; a.beat.add(h.ab); }
+  }
+  // Order: Cup wins → head-to-head (two-team ties) → point differential → points scored
+  const byRec = (x, y) => (y.w - x.w) || (x.l - y.l);
+  const rest = (x, y) => ((y.pf - y.pa) - (x.pf - x.pa)) || (y.pf - x.pf);
+  const orderGroup = (list) => {
+    const rows = list.map((ab) => line[ab]).sort((x, y) => byRec(x, y) || rest(x, y));
+    for (let i = 0; i < rows.length - 1; i++) {
+      const tied = rows.filter((r) => byRec(r, rows[i]) === 0);
+      if (tied.length === 2 && byRec(rows[i], rows[i + 1]) === 0 && rows[i + 1].beat.has(rows[i].ab)) { const t = rows[i]; rows[i] = rows[i + 1]; rows[i + 1] = t; }
+    }
+    return rows;
+  };
+  const tables = Object.fromEntries(Object.entries(cfg.groups).map(([name, list]) => [name, orderGroup(list)]));
+  const played = Object.values(line).reduce((n, r) => n + r.w, 0);
+  const groupsDone = played >= 60;
+  const anyPlayed = played > 0;
+  // Seeds per conference: three group winners (by record, then differential), then the best of the rest
+  const seedsOf = (conf) => {
+    const names = Object.keys(tables).filter((n) => n.startsWith(conf));
+    const winners = names.map((n) => tables[n][0]).sort((x, y) => byRec(x, y) || rest(x, y));
+    const others = names.flatMap((n) => tables[n].slice(1)).sort((x, y) => byRec(x, y) || rest(x, y));
+    return { seeds: [...winners, others[0]], chase: others.slice(1, 3) };
+  };
+  const E = seedsOf("East"), W = seedsOf("West");
+  const wild = new Set([E.seeds[3]?.ab, W.seeds[3]?.ab]);
+  // Knockout results: a game on a knockout night between the two teams in that slot
+  const koGame = (round, a, b) => (!a || !b ? null : data.games.find((g) => g.round === round && ((sameAbbr(g.home.abbr, a) && sameAbbr(g.away.abbr, b)) || (sameAbbr(g.home.abbr, b) && sameAbbr(g.away.abbr, a)))) || null);
+  const scoreIn = (g, ab) => (!g ? null : sameAbbr(g.home.abbr, ab) ? g.home.score : g.away.score);
+  const winnerOf = (g, a, b) => (!g || !g.completed ? null : scoreIn(g, a) > scoreIn(g, b) ? a : b);
+  const bracketOf = (S) => {
+    const ab = (i) => (anyPlayed ? S.seeds[i]?.ab : null);
+    const q1 = koGame("qf", ab(0), ab(3)), q2 = koGame("qf", ab(1), ab(2));
+    const s1 = groupsDone ? winnerOf(q1, ab(0), ab(3)) : null, s2 = groupsDone ? winnerOf(q2, ab(1), ab(2)) : null;
+    const sf = koGame("sf", s1, s2);
+    return { ab, q1, q2, s1, s2, sf, champ: winnerOf(sf, s1, s2) };
+  };
+  const BE = bracketOf(E), BW = bracketOf(W);
+  const fin = koGame("final", BE.champ, BW.champ); const cupChamp = winnerOf(fin, BE.champ, BW.champ);
+  const Slot = ({ ab, seed, g, other, right }) => {
+    const t = ab ? teamOf(ab) : null; const sc = ab ? scoreIn(g, ab) : null; const won = g && g.completed && ab && winnerOf(g, ab, other) === ab; const lost = g && g.completed && ab && !won;
+    return (
+      <button onClick={() => t && onSelect(t)} className={"flex items-center gap-1 h-8 px-1.5 w-full " + (right ? "flex-row-reverse text-right" : "") + (lost ? " opacity-50" : "")}>
+        {ab ? <img src={(t && t.logo) || TEAM_LOGOS[ab] || ""} alt="" className="w-5 h-5 object-contain shrink-0" style={logoTrim(ab)} /> : <span className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />}
+        {seed ? <span className="text-[9px] font-extrabold text-slate-400 w-3">{seed}</span> : null}
+        <span className={"text-[11px] text-slate-900 dark:text-white truncate " + (won ? "font-black" : "font-extrabold")}>{ab || "TBD"}</span>
+        {sc != null && g.state !== "pre" && <span className={"text-[10px] font-extrabold tabular-nums " + (right ? "mr-auto" : "ml-auto") + (g.state === "in" ? " text-red-500" : won ? " text-slate-900 dark:text-white" : " text-slate-400")}>{sc}</span>}
+      </button>
+    );
+  };
+  const Pair = ({ a, b, sa, sb, g, right }) => (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 shadow-sm">
+      <Slot ab={a} seed={sa} g={g} other={b} right={right} /><Slot ab={b} seed={sb} g={g} other={a} right={right} />
+    </div>
+  );
+  const Join = ({ right }) => (
+    <div className={"w-5 shrink-0 self-stretch flex flex-col " + (right ? "items-end" : "items-start")}>
+      <div className={"flex-1 w-1/2 border-slate-300 dark:border-slate-600 " + (right ? "border-l-2 border-b-2 rounded-bl-md" : "border-r-2 border-b-2 rounded-br-md")} style={{ marginTop: 32 }} />
+      <div className={"flex-1 w-1/2 border-slate-300 dark:border-slate-600 " + (right ? "border-l-2 border-t-2 rounded-tl-md" : "border-r-2 border-t-2 rounded-tr-md")} style={{ marginBottom: 32 }} />
+    </div>
+  );
+  const Conf = ({ B, title, right }) => (
+    <div>
+      <div className={"flex items-center justify-between px-1 mb-2 " + (right ? "flex-row-reverse" : "")}>
+        <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">{title}</span>
+        <span className="text-[9px] font-semibold text-slate-400">Quarterfinals Dec 4–5 · Semifinal Dec 8–9</span>
+      </div>
+      <div className={"flex items-stretch " + (right ? "flex-row-reverse" : "")}>
+        <div className="flex flex-col justify-around gap-2 flex-1 min-w-0">
+          <Pair a={B.ab(0)} b={B.ab(3)} sa={1} sb={4} g={B.q1} right={right} />
+          <Pair a={B.ab(1)} b={B.ab(2)} sa={2} sb={3} g={B.q2} right={right} />
+        </div>
+        <Join right={right} />
+        <div className="flex flex-col justify-around flex-1 min-w-0"><Pair a={B.s1} b={B.s2} g={B.sf} right={right} /></div>
+      </div>
+    </div>
+  );
+  const GroupCard = ({ name }) => (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+      <div className="flex items-center px-2 py-1 bg-slate-50 dark:bg-slate-800/60 text-[9px] font-extrabold tracking-widest uppercase text-slate-500 dark:text-slate-300">
+        <span className="flex-1">{name.replace("East ", "Group ").replace("West ", "Group ")}</span><span className="w-8 text-center">W-L</span><span className="w-9 text-right">Diff</span>
+      </div>
+      {tables[name].map((r, i) => {
+        const t = teamOf(r.ab); const diff = r.pf - r.pa; const gp = r.w + r.l;
+        return (
+          <button key={r.ab} onClick={() => t && onSelect(t)} className="w-full flex items-center gap-1 px-2 h-8 text-left border-t border-slate-100 dark:border-slate-800 active:bg-slate-50 dark:active:bg-slate-800" style={{ boxShadow: i === 0 && anyPlayed ? "inset 3px 0 0 #16A34A" : wild.has(r.ab) && anyPlayed ? "inset 3px 0 0 #F59E0B" : undefined }}>
+            <img src={(t && t.logo) || TEAM_LOGOS[r.ab] || ""} alt="" className="w-5 h-5 object-contain shrink-0" style={logoTrim(r.ab)} />
+            <span className="flex-1 min-w-0 flex items-center gap-1"><span className="text-[11px] font-extrabold text-slate-900 dark:text-white">{r.ab}</span>
+              {r.live && <span className="text-[8px] font-extrabold text-red-500">LIVE</span>}
+              {wild.has(r.ab) && anyPlayed && <span className="text-[8px] font-extrabold text-amber-600">WC</span>}</span>
+            <span className="w-8 text-center text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{r.w}-{r.l}</span>
+            <span className={"w-9 text-right text-[11px] font-bold tabular-nums " + (gp === 0 ? "text-slate-300 dark:text-slate-600" : diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-slate-400")}>{gp === 0 ? "–" : (diff > 0 ? "+" : "") + diff}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+  const groupsBlock = (
+    <div>
+      <div className="flex items-center justify-between px-1 mb-2">
+        <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">Group play</span>
+        <span className="text-[9px] font-semibold text-slate-400">{groupsDone ? "Final" : played + " of 60 games · through Nov 27"}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {["East", "West"].map((c) => (
+          <div key={c} className="space-y-2 min-w-0">
+            <div className="text-[9px] font-extrabold tracking-widest uppercase text-slate-400 px-1">{c}</div>
+            {["A", "B", "C"].map((x) => <GroupCard key={x} name={c + " " + x} />)}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 px-1 text-[10px] text-slate-400 leading-snug">
+        <span className="inline-block w-2 h-2 rounded-sm bg-green-600 mr-1 align-middle" />Group leader <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 ml-2 mr-1 align-middle" />Wildcard (best of the rest in each conference). Ties: head-to-head, then point differential, then points scored.
+        {!groupsDone && anyPlayed && (E.chase.length > 0 || W.chase.length > 0) && <span className="block mt-1">Next in the wildcard race: East {E.chase.map((r) => r.ab).join(", ") || "—"} · West {W.chase.map((r) => r.ab).join(", ") || "—"}</span>}
+      </div>
+    </div>
+  );
+  const bracketBlock = (
+    <div className="space-y-4">
+      <div className="text-[10px] font-semibold text-slate-400 px-1">{groupsDone ? "Knockout rounds · single elimination" : anyPlayed ? "Quarterfinals if group play ended today · later rounds fill in as games are played" : "The bracket fills in once group play starts"}</div>
+      <Conf B={BE} title="East" />
+      <div className="flex items-center gap-3">
+        <div className="flex-1 border-t border-slate-200 dark:border-slate-700" />
+        <div className="rounded-2xl border-2 border-amber-400 bg-white dark:bg-slate-900 px-4 py-2 text-center shadow-sm min-w-[150px]">
+          <div className="text-[9px] font-extrabold tracking-widest uppercase text-amber-500">{cupChamp ? "NBA Cup champion" : "Championship"}</div>
+          {BE.champ || BW.champ ? <div className="text-[13px] font-extrabold text-slate-900 dark:text-white mt-0.5">{cupChamp || `${BE.champ || "TBD"}${fin && fin.state !== "pre" ? " " + scoreIn(fin, BE.champ) : ""} · ${BW.champ || "TBD"}${fin && fin.state !== "pre" ? " " + scoreIn(fin, BW.champ) : ""}`}</div> : <div className="text-[11px] font-extrabold text-slate-400 mt-0.5">East · West</div>}
+          <div className="text-[9px] font-semibold text-slate-400 mt-0.5">{cupChamp && fin ? `${scoreIn(fin, BE.champ)}-${scoreIn(fin, BW.champ)} · ${cfg.finalSite}` : cfg.finalSite}</div>
+        </div>
+        <div className="flex-1 border-t border-slate-200 dark:border-slate-700" />
+      </div>
+      <Conf B={BW} title="West" right />
+    </div>
+  );
+  return (
+    <div className="mt-4 space-y-6">
+      {data.error && <div className="text-center text-[11px] text-slate-400">Couldn't reach the scores just now. Showing the groups without results.</div>}
+      {groupsDone ? <>{bracketBlock}{groupsBlock}</> : <>{groupsBlock}{bracketBlock}</>}
+    </div>
+  );
+}
+
+// Brackets pill: NBA Cup or Playoffs. Opens on the Cup while it's being played.
+function Brackets({ teams, onSelect }) {
+  const [which, setWhich] = useState(cupInSeason() ? "cup" : "playoffs");
+  return (
+    <div className="mt-3">
+      <div className="pillrow flex gap-2">
+        {[["cup", "NBA Cup"], ["playoffs", "Playoffs"]].map(([k, lbl]) => (
+          <button key={k} onClick={() => setWhich(k)} className={"flex-1 py-1.5 rounded-full text-[12px] font-extrabold border " + (which === k ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800")}>{lbl}</button>
+        ))}
+      </div>
+      {which === "cup" ? <CupBracket teams={teams} onSelect={onSelect} /> : <PlayoffBracket teams={teams} onSelect={onSelect} />}
+    </div>
+  );
+}
+
 // Conference standings tables with the playoff (1–6) and play-in (7–10) lines
 const confKey = (t) => { const c = String(t.conference || "").toLowerCase(); return c.startsWith("east") ? "east" : c.startsWith("west") ? "west" : "other"; };
 function StandingsTable({ teams, onSelect }) {
@@ -2171,7 +2358,7 @@ function TeamsTab({ teams, players, onSelect }) {
     <div>
       <div className="px-4 pb-28" style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" }}>
         <div className="flex gap-2 mt-1">
-          {[["all", "Teams"], ["east", "East"], ["west", "West"], ["standings", "Standings"], ["playoffs", "Playoffs"]].map(([k, lbl]) => (
+          {[["all", "Teams"], ["east", "East"], ["west", "West"], ["standings", "Standings"], ["playoffs", "Brackets"]].map(([k, lbl]) => (
             <button key={k} onClick={() => pickConf(k)}
               className={"flex-1 py-2 rounded-full text-[11px] font-bold transition-colors " + (conf === k
                 ? "bg-blue-600 text-white"
@@ -2193,7 +2380,7 @@ function TeamsTab({ teams, players, onSelect }) {
           </div>
         )}
         {conf === "standings" && <StandingsTable teams={teams} onSelect={onSelect} />}
-        {conf === "playoffs" && <PlayoffBracket teams={teams} onSelect={onSelect} />}
+        {conf === "playoffs" && <Brackets teams={teams} onSelect={onSelect} />}
         <div className={"space-y-2.5 mt-4" + (conf === "standings" || conf === "playoffs" ? " hidden" : "")}>
           {list.map((t) => {
             const abbr = t.abbr || toAbbr(t.name);
