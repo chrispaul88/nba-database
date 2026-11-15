@@ -4345,48 +4345,165 @@ button.rounded-full.border-slate-200 { border-color: #cbd5e1; box-shadow: 0 1px 
 @media (prefers-color-scheme: dark) { button.rounded-full.border-slate-200 { border-color: #334155; box-shadow: 0 1px 2px rgba(0,0,0,.4); } }
 button.rounded-full.text-white { box-shadow: 0 2px 6px rgba(15,23,42,.18); }
 `;
-// ── News strip: the latest injury updates and transactions, one at a time, above the tab bar ──
-function NewsTicker({ players, teams, onPlayer, onTeam, tick }) {
+// ── Bottom line: scores with each team's top performer, long-term injuries, and trades ──
+// One item at a time, like a TV score bug. Not every injury: only players out for weeks.
+// Returns the end of the sentence ("will be re-evaluated in four weeks"), or null if he isn't out long.
+function longTermPhrase(r) {
+  if (!/out/i.test(String(r.status || ""))) return null;
+  const text = String(r.comment || "");
+  const days = r.returnDate ? Math.round((new Date(r.returnDate).getTime() - Date.now()) / 86400000) : null;
+  const N = "(?:\\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|several|multiple|a few|a couple of)";
+  const SPAN = "(" + N + "(?:\\s*(?:-|–|to)\\s*" + N + ")?\\s+(?:weeks?|months?))";
+  const tidy = (x) => x.toLowerCase().replace(/\s*(-|–|to)\s*(?=\S+\s+(weeks?|months?))/, " to ");
+  const oneWeek = (x) => /^(a|one|1)\s+week$/i.test(x.trim());
+  if (/(rest|remainder) of the (\d{4}-\d{2,4} )?(regular )?season|season-ending|out for the season|miss the (entire )?season/i.test(text)) return "is out for the season";
+  let m = text.match(new RegExp("re-?evaluated in (?:about |approximately |roughly )?" + SPAN, "i"));
+  if (m && !oneWeek(m[1])) return "will be re-evaluated in " + tidy(m[1]);
+  if (days != null && days >= 14) return "is expected back around " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) + " (about " + (days >= 60 ? Math.round(days / 30) + " months" : Math.round(days / 7) + " weeks") + ")";
+  if (days != null) return null;                                   // ESPN expects him back within two weeks
+  m = text.match(new RegExp("(?:miss|out|sidelined|shelved|sidelined for|absence of)(?: for)?(?: at least| about| approximately| roughly| the next| up to)? " + SPAN, "i"));
+  if (m && !oneWeek(m[1])) return "is expected to miss " + tidy(m[1]);
+  if (/indefinitely|no timetable/i.test(text)) return "is out indefinitely";
+  if (/\bsurgery\b/i.test(text)) return "is out after surgery";
+  return null;
+}
+// One line of text that slides left when it doesn't fit, then reports how long it needs on screen
+function SlideText({ text, onNeed, className }) {
+  const outer = useRef(null), inner = useRef(null);
+  const [shift, setShift] = useState(0);
+  useEffect(() => {
+    const over = outer.current && inner.current ? inner.current.scrollWidth - outer.current.clientWidth : 0;
+    const still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (over > 4 && !still) { const secs = over / 45; onNeed(1500 + secs * 1000 + 1800); const t = setTimeout(() => setShift(over + 6), 1500); return () => clearTimeout(t); }
+    onNeed(over > 4 ? 8000 : 5500);
+  }, [text]);
+  return (
+    <span ref={outer} className="block overflow-hidden">
+      <span ref={inner} className={"inline-block whitespace-nowrap " + (className || "")} style={{ transform: `translateX(-${shift}px)`, transition: shift ? `transform ${shift / 45}s linear` : "none" }}>{text}</span>
+    </span>
+  );
+}
+function NewsTicker({ players, teams, onPlayer, onTeam, onGame, tick }) {
   const [tx, setTx] = useState([]);
+  const [today, setToday] = useState([]);
+  const [yday, setYday] = useState([]);
+  const [boxes, setBoxes] = useState({});      // game id → box score, for the full stat line
   const [i, setI] = useState(0);
+  const [hold, setHold] = useState(5500);
   useEffect(() => {
     let alive = true;
-    const load = () => fetch("/api/transactions").then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && d.records && setTx(d.records)).catch(() => {});
-    load(); const iv = setInterval(load, 10 * 60 * 1000);
-    return () => { alive = false; clearInterval(iv); };
+    const get = (url, set) => fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => alive && d && set(d)).catch(() => {});
+    const scores = () => get("/api/scoreboard", (d) => d.games && setToday(d.games));
+    const trades = () => get("/api/transactions", (d) => d.records && setTx(d.records));
+    const y = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })); y.setDate(y.getDate() - 1);
+    get("/api/scoreboard?date=" + y.getFullYear() + String(y.getMonth() + 1).padStart(2, "0") + String(y.getDate()).padStart(2, "0"), (d) => d.games && setYday(d.games));
+    scores(); trades();
+    const a = setInterval(scores, 60000), b = setInterval(trades, 10 * 60 * 1000);
+    return () => { alive = false; clearInterval(a); clearInterval(b); };
   }, []);
-  const since = Date.now() - 3 * 86400000;
-  const nick = (name) => { const w = String(name || "").trim().split(" "); return /trail/i.test(name) ? "Trail Blazers" : w[w.length - 1] || ""; };
-  const items = [];
+  const started = today.filter((g) => g.state !== "pre");
+  const shownGames = [...today.filter((g) => g.state !== "pre"), ...(started.length ? [] : yday.filter((g) => g.state === "post"))];
+  // Box scores: finished games are read once; games in progress are re-read with each score refresh
+  const liveKey = today.filter((g) => g.state === "in").map((g) => g.id + ":" + (g.away.score ?? 0) + "-" + (g.home.score ?? 0)).join(",");
+  const doneKey = shownGames.filter((g) => g.state === "post").map((g) => g.id).join(",");
+  useEffect(() => {
+    let alive = true;
+    for (const g of shownGames) {
+      if (g.state === "post" && boxes[g.id] && boxes[g.id].final) continue;
+      fetch("/api/game?id=" + g.id).then((r) => (r.ok ? r.json() : null)).then((d) => { if (alive && d && d.box) setBoxes((prev) => ({ ...prev, [g.id]: { box: d.box, final: g.state === "post" } })); }).catch(() => {});
+    }
+    return () => { alive = false; };
+  }, [liveKey, doneKey]);
+  // "DEN › N. Jokic: 26 pts, 8 reb, 10 ast, 3 stl" — the team's top scorer and his full line
+  const starLine = (g, side) => {
+    const bx = boxes[g.id] && boxes[g.id].box; const tb = bx && (bx[side.abbr] || Object.entries(bx).find(([k]) => sameAbbr(k, side.abbr))?.[1]);
+    if (tb && tb.rows && tb.rows.length) {
+      const at = (r, c) => { const ix = tb.cols.indexOf(c); return ix >= 0 ? Number(r.stats[ix]) || 0 : 0; };
+      const top = tb.rows.filter((r) => !r.dnp && r.stats && r.stats.length).sort((x, y) => at(y, "PTS") - at(x, "PTS") || at(y, "REB") + at(y, "AST") - at(x, "REB") - at(x, "AST"))[0];
+      if (top) {
+        const bits = [at(top, "PTS") + " pts"];
+        if (at(top, "REB") > 0) bits.push(at(top, "REB") + " reb");
+        if (at(top, "AST") > 0) bits.push(at(top, "AST") + " ast");
+        if (at(top, "STL") >= 2) bits.push(at(top, "STL") + " stl");
+        if (at(top, "BLK") >= 2) bits.push(at(top, "BLK") + " blk");
+        return `${side.abbr} › ${top.name}: ${bits.join(", ")}`;
+      }
+    }
+    const L = side.leaders || []; const of = (re) => L.find((l) => re.test(String(l.cat || "")));
+    const pts = of(/^p|point/i); if (!pts || !pts.name) return null;
+    const bits = [pts.value + " pts"];
+    for (const [re, lbl] of [[/^r|reb/i, "reb"], [/^a|ast|assist/i, "ast"]]) { const l = of(re); if (l && l.name === pts.name) bits.push(l.value + " " + lbl); }
+    return `${side.abbr} › ${pts.name}: ${bits.join(", ")}`;
+  };
+  const gameItem = (g, yesterday) => {
+    const live = g.state === "in", done = g.state === "post";
+    const status = live ? (g.detail || "LIVE") : done ? (yesterday ? "FINAL · YEST." : "FINAL") : new Date(g.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const lines = live || done ? [starLine(g, g.away), starLine(g, g.home)].filter(Boolean) : [`${g.away.abbr} ${g.away.record ? "(" + g.away.record + ")" : ""} at ${g.home.abbr} ${g.home.record ? "(" + g.home.record + ")" : ""}`, [g.broadcast, g.odds && g.odds.details].filter(Boolean).join(" · ")].filter(Boolean);
+    return { key: "g" + g.id, type: "game", g, live, done, status, lines };
+  };
+  const items = [
+    ...today.filter((g) => g.state === "in").map((g) => gameItem(g)),
+    ...today.filter((g) => g.state === "post").map((g) => gameItem(g)),
+    ...(started.length ? [] : yday.filter((g) => g.state === "post").map((g) => gameItem(g, true))),
+    ...today.filter((g) => g.state === "pre").map((g) => gameItem(g)),
+  ];
+  const since = Date.now() - 4 * 86400000;
+  const fresh = (d) => Date.now() - new Date(d).getTime() < 12 * 3600000;       // "breaking": reported in the last 12 hours
+  const news = [];
   for (const r of Object.values(INJ_BY_NAME)) {
-    if (!r.date || new Date(r.date).getTime() < since || !r.status) continue;
-    const ab = toAbbr(r.team) || "";
-    const ret = r.returnDate ? " Expected back " + new Date(r.returnDate).toLocaleDateString([], { month: "short", day: "numeric" }) + "." : "";
-    items.push({ key: "i" + (r.id || r.name), date: r.date, ab, head: `${nick(r.team)} · ${r.name} · ${r.status}`, body: (r.comment || (r.detail ? r.detail + "." : "Listed as " + r.status + ".")) + (r.comment ? "" : ret), name: r.name, hot: /out|doubt/i.test(r.status) });
+    if (!r.date || new Date(r.date).getTime() < since) continue;
+    const phrase = longTermPhrase(r); if (!phrase) continue;
+    const ab = toAbbr(r.team) || ""; const p = (players || []).find((x) => espnNrm(x.name) === espnNrm(r.name));
+    const pos = String(r.pos || (p ? courtPos(p) : "") || "").toUpperCase();
+    const what = r.detail ? " (" + String(r.detail).replace(/\s+/g, " ").trim().toLowerCase() + ")" : "";
+    news.push({ key: "i" + (r.id || r.name), type: "news", date: r.date, ab, text: `${ab}: ${pos ? pos + " " : ""}${r.name}${what} ${phrase}.`, name: r.name, breaking: fresh(r.date) });
   }
   for (const r of tx) {
-    if (!r.date || new Date(r.date).getTime() < since || !r.text) continue;
-    items.push({ key: "t" + r.id, date: r.date, ab: r.team, head: `${nick(r.teamName) || r.team} · ${r.kind && !/other/i.test(r.kind) ? r.kind : "Transaction"}`, body: r.text });
+    if (!r.date || new Date(r.date).getTime() < since || !r.text || !/trade/i.test(String(r.kind || ""))) continue;
+    news.push({ key: "t" + r.id, type: "news", date: r.date, ab: r.team, text: `${r.team}: ${r.text}`, breaking: fresh(r.date) });
   }
-  items.sort((a, b) => new Date(b.date) - new Date(a.date));
-  const list = items.slice(0, 30);
+  news.sort((a, b) => new Date(b.date) - new Date(a.date));
+  // a headline after every three scores, so news isn't stuck at the end of a 12-game night
+  const list = []; const nq = news.slice(0, 12); let gi = 0;
+  while (gi < items.length || nq.length) { for (let k = 0; k < 3 && gi < items.length; k++) list.push(items[gi++]); if (nq.length) list.push(nq.shift()); }
   const n = list.length;
-  const still = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const cur = n ? list[i % n] : null;
-  useEffect(() => { if (!still || !n) return; const t = setTimeout(() => setI((x) => x + 1), 6000); return () => clearTimeout(t); }, [still, n, i]);
+  const wait = cur && cur.type === "news" ? hold : 5500;
+  useEffect(() => { if (n < 2) return; const t = setTimeout(() => setI((x) => x + 1), wait); return () => clearTimeout(t); }, [n, i, wait]);
   if (!cur) return null;
-  const secs = Math.max(9, Math.round(cur.body.length * 0.13) + 5);          // longer write-ups scroll longer, same speed
-  const open = () => { const p = cur.name && (players || []).find((x) => espnNrm(x.name) === espnNrm(cur.name)); if (p) return onPlayer(p); const t = (teams || []).find((x) => sameAbbr(x.abbr || toAbbr(x.name), cur.ab)); if (t) onTeam(t); };
-  const logo = TEAM_LOGOS[modernAbbr(cur.ab)] || TEAM_LOGOS[cur.ab];
-  return (
-    <button onClick={open} className="w-full flex items-center gap-2 h-10 pl-2 pr-0 text-left bg-slate-950 border-b border-slate-800 overflow-hidden" style={{ boxShadow: "inset 3px 0 0 " + (cur.hot ? "#DC2626" : teamInk(cur.ab)) }}>
-      <style>{`@keyframes newsScroll { from { transform: translateX(0); } to { transform: translateX(-100%); } }`}</style>
-      {logo ? <img src={logo} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : <span className="w-7 h-7 shrink-0" />}
-      <span className="flex-1 min-w-0 overflow-hidden">
-        <span className="block text-[10px] font-extrabold tracking-wide uppercase text-white truncate leading-tight">{cur.head}</span>
-        <span className="block overflow-hidden leading-tight">
-          <span key={cur.key + "-" + i} className={"inline-block whitespace-nowrap text-[11px] text-white/90 " + (still ? "truncate max-w-full" : "")} style={still ? undefined : { animation: `newsScroll ${secs}s linear 1`, paddingLeft: "45%" }} onAnimationEnd={() => setI((x) => x + 1)}>{cur.body}</span>
+  const logoOf = (ab) => TEAM_LOGOS[modernAbbr(ab)] || TEAM_LOGOS[ab];
+  const shell = "w-full flex items-center h-11 text-left bg-slate-950 border-t border-slate-800 overflow-hidden";
+  const tagBox = "self-stretch w-[68px] whitespace-nowrap flex flex-col justify-center px-1.5 bg-slate-900 border-r border-slate-800 text-[9px] font-extrabold tracking-wider leading-tight text-right shrink-0 uppercase";
+  const css = <style>{`@keyframes newsIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } } @media (prefers-reduced-motion: reduce) { .newsIn { animation: none !important; } }`}</style>;
+  if (cur.type === "game") {
+    const g = cur.g; const aw = cur.done && (g.away.score ?? 0) > (g.home.score ?? 0), hw = cur.done && (g.home.score ?? 0) > (g.away.score ?? 0);
+    const Row = ({ side, win }) => (
+      <span className={"flex items-center leading-none " + (win ? "text-amber-300" : cur.done ? "text-white/70" : "text-white")}>
+        <span className="w-10 text-[12px] font-extrabold tracking-wide">{side.abbr}</span>
+        <span className="w-7 text-right text-[12px] font-extrabold tabular-nums">{g.state === "pre" ? "" : side.score ?? ""}</span>
+      </span>
+    );
+    return (
+      <button onClick={() => onGame(g)} className={shell}>
+        {css}
+        <span className={tagBox}><span className="text-white">NBA</span><span className="text-amber-300">{cur.status}</span></span>
+        <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2.5 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
+          <span className="flex flex-col gap-1 shrink-0"><Row side={g.away} win={aw} /><Row side={g.home} win={hw} /></span>
+          <span className="flex-1 min-w-0 flex flex-col gap-0.5 border-l border-slate-800 pl-2.5">
+            {cur.lines.map((t, k) => <span key={k} className="text-[10.5px] font-semibold text-white truncate leading-tight">{t}</span>)}
+          </span>
         </span>
+      </button>
+    );
+  }
+  const open = () => { const p = cur.name && (players || []).find((x) => espnNrm(x.name) === espnNrm(cur.name)); if (p) return onPlayer(p); const t = (teams || []).find((x) => sameAbbr(x.abbr || toAbbr(x.name), cur.ab)); if (t) onTeam(t); };
+  return (
+    <button onClick={open} className={shell}>
+      {css}
+      <span className={tagBox}>{cur.breaking ? <><span className="text-red-500">Breaking</span><span className="text-red-500">News</span></> : <><span className="text-white">NBA</span><span className="text-white">News</span></>}</span>
+      <span key={cur.key + i} className="newsIn flex-1 min-w-0 flex items-center gap-2 pl-2.5 pr-2" style={{ animation: "newsIn .35s ease-out" }}>
+        {logoOf(cur.ab) ? <img src={logoOf(cur.ab)} alt="" className="w-7 h-7 object-contain shrink-0" style={logoTrim(cur.ab)} /> : null}
+        <span className="flex-1 min-w-0"><SlideText text={cur.text} onNeed={setHold} className="text-[12px] font-semibold text-white" /></span>
       </span>
     </button>
   );
@@ -4538,9 +4655,9 @@ export default function App() {
       {players && tab === "players" && <PlayersHub players={players} teams={teams} onSelect={setSel} injury={injury} />}
       {players && tab === "stats" && <StatsTab players={players} teams={teams} onSelect={setSel} focus={statsFocus} onBackToPlayer={() => { const f = statsFocus; if (!f) return; setStatsFocus(null); if (f.teamId) { const t = (teams || []).find((x) => x.id === f.teamId); setTab(f.from?.tab || "teams"); setSelTeam(t || null); return; } const pl = (players || []).find((x) => x.id === f.id); if (pl) { if (f.from) { setTab(f.from.tab); setSelTeam(f.from.team || null); } setSel(pl); } }} />}
 
-      <div className="h-10" />{/* room for the news strip */}
+      <div className="h-11" />{/* room for the bottom line */}
       <div className="fixed bottom-0 inset-x-0 z-20">
-        {players && <NewsTicker players={players} teams={teams} tick={injury.feed ? injury.feed.updatedAt : 0} onPlayer={(p) => setSel(p)} onTeam={(t) => { setSel(null); setSelGame(null); setSelTeam(t); }} />}
+        {players && <NewsTicker players={players} teams={teams} tick={injury.feed ? injury.feed.updatedAt : 0} onPlayer={(p) => setSel(p)} onTeam={(t) => { setSel(null); setSelGame(null); setSelTeam(t); }} onGame={(g) => { setSel(null); setSelTeam(null); setTab("tonight"); setSelGame(g); }} />}
       <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex pb-[env(safe-area-inset-bottom)]">
         {TABS.map((t) => (
           <button
