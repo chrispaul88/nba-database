@@ -775,9 +775,9 @@ function CompareView({ a, b, color, onSwap }) {
 const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [2, 4, 6, 8, 10, 12, 14, 16], ast: [2, 4, 6, 8, 10, 12, 14], p3m: [1, 2, 3, 4, 5] };
 const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM" };
 const CS_STATS = ["pts", "reb", "ast", "p3m"];
-function CheatSheet({ games, teams, players, onSelect }) {
+function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
   const [pick, setPick] = useState(null);                // one team, or null for the whole slate
-  const [floor, setFloor] = useState(70);                // hit-rate threshold: 70% or 80%
+  const floor = 70;                                      // a prop shows when it has hit in at least 70% of his games
   const [data, setData] = useState(null);
   const upcoming = (games || []).filter((g) => g.state !== "post");
   const slate = [];                                       // [{ ab, opp, home }] using ESPN's codes from the scoreboard
@@ -798,8 +798,8 @@ function CheatSheet({ games, teams, players, onSelect }) {
   const lastGameOf = {};
   for (const rec of (data && data.players) || []) { const last = rec.g[rec.g.length - 1]; if (last && (!lastGameOf[rec.team] || new Date(last.d) > new Date(lastGameOf[rec.team]))) lastGameOf[rec.team] = last.d; }
   const isB2B = (team, gameDate) => { const last = lastGameOf[team]; if (!last || !gameDate) return false; const y = etDay(gameDate); y.setDate(y.getDate() - 1); return etDay(last).toDateString() === y.toDateString(); };
-  if (!data) return <div className="px-4 py-10 text-center text-xs text-slate-400">Reading this season's box scores for these teams… (10–20 seconds the first time)</div>;
-  if (data.error) return <div className="px-4 py-10 text-center text-xs text-slate-400">Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
+  if (!data) return <div className={"px-4 text-center text-xs text-slate-400 " + (embedded ? "py-5" : "py-10")}>Reading this season's box scores for these teams…</div>;
+  if (data.error) return <div className={"px-4 text-center text-xs text-slate-400 " + (embedded ? "py-5" : "py-10")}>Couldn't load the game logs ({data.error}). Pull down to refresh, or try again in a minute.</div>;
   // What each opponent gives up per stat, ranked against the league (1 = allows the most)
   const TL = LIVE_STATS.teams || {};
   const allowedOf = (t, k) => (!t ? null : k === "pts" ? t.oppPts : k === "reb" ? t.oppReb : k === "ast" ? t.oppAst : t.opp3pm);
@@ -839,16 +839,23 @@ function CheatSheet({ games, teams, players, onSelect }) {
   const cellCls = (pct) => (pct >= 90 ? "bg-green-600 text-white" : pct >= 80 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800");
   const pill = (on) => "shrink-0 px-3 py-1.5 rounded-full text-[11px] font-extrabold border " + (on ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800");
   return (
-    <div className="px-4 pt-3 pb-28">
+    <div className={embedded ? "pt-2" : "px-4 pt-3 pb-28"}>
+      {embedded ? (
+        <div className="flex items-center gap-1 mb-2 px-1">
+          <span className="text-[10px] font-semibold text-slate-400">Props that hit in 70% or more of his games</span>
+          {onMatchup && <button onClick={onMatchup} className="ml-auto px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-blue-600 text-white">Matchup ›</button>}
+        </div>
+      ) : (<>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Props by team</span>
-        <span className="flex items-center gap-1"><span className="text-[10px] text-slate-400 mr-1">hits at least</span>{[70, 80].map((f) => <button key={f} onClick={() => setFloor(f)} className={"px-2.5 py-1 rounded-full text-[10px] font-extrabold border " + (floor === f ? "bg-slate-900 text-white border-transparent dark:bg-white dark:text-slate-900" : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-800")}>{f}%</button>)}</span>
+        <span className="text-[10px] font-semibold text-slate-400">70% or better</span>
       </div>
       <div className="flex gap-1.5 overflow-x-auto pb-2 mb-1 -mx-4 px-4" style={{ scrollbarWidth: "none" }}>
         <button onClick={() => setPick(null)} className={pill(!pick)}>All teams</button>
         {blocks.map((x) => <button key={x.key} onClick={() => setPick(x.ab)} className={pill(pick === x.ab)}>{x.ab}</button>)}
       </div>
       <div className="text-[10px] text-slate-400 mb-3 px-1">Each box is the highest line that player has cleared in at least {floor}% of his games this season, with the hit rate under it. A dash means no line clears {floor}%. Tap a player for his game log.</div>
+      </>)}
       {shown.map((x) => (
         <div key={x.key} className="mb-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden" style={{ borderTop: "4px solid " + tileBorder(x.ab) }}>
           <div className="px-3 pt-2.5 pb-2">
@@ -3263,6 +3270,7 @@ function TeamTrends({ roster, abbr, onSelectPlayer }) {
 // Team per-game numbers are the roster's per-game stats added up; percentages
 // are weighted by attempts. Shows rank AND distance from the pack.
 const PROFILE_STATS = [["pts", "PTS"], ["fgm", "FGM"], ["p3m", "3PM"], ["ftm", "FTM"], ["reb", "REB"], ["oreb", "OREB"], ["dreb", "DREB"], ["ast", "AST"], ["stl", "STL"], ["blk", "BLK"], ["tov", "TO", true], ["fga", "FGA"], ["p3a", "3PA"], ["fta", "FTA"], ["fg", "FG%", false, "pct"], ["p3", "3P%", false, "pct"], ["ft", "FT%", false, "pct"]];
+const PROFILE_GROUPS = [["Scoring", ["pts"]], ["Field goals", ["fgm", "fga", "fg"]], ["Three-pointers", ["p3m", "p3a", "p3"]], ["Free throws", ["ftm", "fta", "ft"]], ["Rebounding", ["reb", "oreb", "dreb"]], ["Playmaking", ["ast", "tov"]], ["Defense", ["stl", "blk"]]];
 function teamStatLine(roster, key, pct) {
   const rows = roster.map(latestStats).filter((s) => s && (s.gp ?? 0) > 0);
   if (!rows.length) return null;
@@ -3289,7 +3297,8 @@ function TeamProfile({ roster, abbr, teams, players }) {
   return (
     <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm px-4 py-3">
       <div className="text-[10px] font-semibold text-slate-400 mb-2">{abbr} vs the league · bar = {abbr} · tick = league average</div>
-      {PROFILE_STATS.map(([k, lbl, lowerBetter, kind]) => {
+      {PROFILE_GROUPS.map(([title, keys]) => {
+        const rows = keys.map((key) => PROFILE_STATS.find((x) => x[0] === key)).filter(Boolean).map(([k, lbl, lowerBetter, kind]) => {
         const vals = league.map((t) => t[k]).filter((v) => v != null);
         const mine = league.find((t) => t.abbr === abbr)?.[k];
         if (!vals.length || mine == null) return null;
@@ -3298,7 +3307,7 @@ function TeamProfile({ roster, abbr, teams, players }) {
         const tone = rank <= 10 ? "#16a34a" : rank <= 20 ? "#d97706" : "#dc2626";
         const pct = (v) => Math.max(2, (v / max) * 100);
         return (
-          <div key={k} className="flex items-center gap-3 py-2.5 border-t first:border-0 border-slate-100 dark:border-slate-800">
+          <div key={k} className="flex items-center gap-3 py-2">
             <div className="w-10 shrink-0 text-[11px] font-extrabold text-slate-900 dark:text-white">{lbl}</div>
             <div className="flex-1 relative h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-visible">
               <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: pct(mine) + "%", backgroundColor: inkColor(color) }} />
@@ -3306,6 +3315,14 @@ function TeamProfile({ roster, abbr, teams, players }) {
             </div>
             <div className="w-12 shrink-0 text-right text-sm font-extrabold text-slate-900 dark:text-white tabular-nums">{kind === "pct" ? mine.toFixed(1) + "%" : mine.toFixed(1)}</div>
             <div className="w-10 shrink-0 text-right text-[11px] font-extrabold" style={{ color: tone }}>{ordinal(rank)}</div>
+          </div>
+        );
+        }).filter(Boolean);
+        if (!rows.length) return null;
+        return (
+          <div key={title} className="mt-3 first:mt-0">
+            <div className="text-[9px] font-extrabold tracking-widest uppercase px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800" style={{ color: teamInk(abbr) }}>{title}</div>
+            {rows}
           </div>
         );
       })}
@@ -4152,7 +4169,7 @@ function dayLabel(d, today) {
 function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
   const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
   const [dayOff, setDayOff] = useState(0);           // days from today
-  const [view, setView] = useState("games");         // games | cheat
+  const [openProps, setOpenProps] = useState({});    // game id → props panel open
   const [sb, setSb] = useState(null);
   const days = useMemo(() => Array.from({ length: 8 }, (_, i) => { const d = new Date(today); d.setDate(d.getDate() + i - 1); return d; }), [today]);
   const day = days[dayOff + 1];
@@ -4202,15 +4219,9 @@ function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
             );
           })}
         </div>
-        <div className="flex gap-2 mt-2">
-          {[["games", "Games"], ["cheat", "Cheat Sheet"]].map(([k, lbl]) => (
-            <button key={k} onClick={() => setView(k)} className={"flex-1 py-1.5 rounded-full text-[11px] font-extrabold " + (view === k ? "bg-white text-blue-700" : "bg-blue-500/60 text-blue-100")}>{lbl}</button>
-          ))}
-        </div>
       </div>
 
-      {view === "cheat" && <CheatSheet games={games} teams={teams} players={players} onSelect={onSelect} />}
-      <div className={"px-4 pt-3 pb-28" + (view === "cheat" ? " hidden" : "")}>
+      <div className="px-4 pt-3 pb-28">
         <style>{`@keyframes hrbRise { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes hrbPing { 75%, 100% { transform: scale(2.2); opacity: 0; } }`}</style>
         {!sb && <div className="p-6 text-center text-xs text-slate-400">Loading games…</div>}
@@ -4268,8 +4279,11 @@ function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
 
               </div>
             );
+            const canProps = g.state === "pre" && !preseason;     // props only make sense before tip-off
+            const open = canProps && !!openProps[g.id];
             return (
-              <button key={g.id} onClick={() => onOpenGame && onOpenGame(g)}
+              <div key={g.id}>
+              <button onClick={() => (canProps ? setOpenProps((o) => ({ ...o, [g.id]: !o[g.id] })) : onOpenGame && onOpenGame(g))}
                 className="w-full rounded-2xl shadow-sm overflow-hidden text-left active:opacity-90"
                 style={{ background: `linear-gradient(100deg, ${ca} 0%, ${ca} 42%, ${ch} 58%, ${ch} 100%)`, animation: `hrbRise .3s ease-out ${gi * 40}ms both` }}>
                 <div className="px-3 py-2.5 flex items-center justify-between gap-2" style={{ background: "linear-gradient(180deg,rgba(255,255,255,0.08),rgba(0,0,0,0.18))" }}>
@@ -4302,12 +4316,15 @@ function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
                   </div>
                   <Side t={g.home} hurt={hurtH} right />
                 </div>
+                {canProps && <div className="text-center text-[9px] font-extrabold tracking-widest uppercase text-white/80 py-1" style={{ background: "rgba(0,0,0,0.28)" }}>{open ? "Hide props ▴" : "Props ▾"}</div>}
               </button>
+              {open && <CheatSheet embedded games={[g]} teams={teams} players={players} onSelect={onSelect} onMatchup={() => onOpenGame && onOpenGame(g)} />}
+              </div>
             );
           })}
         </div>
         {games.length > 0 && (
-          <div className="text-[9px] text-slate-400 mt-3 px-1">Tap a game for live scoring, leaders, and the latest plays.</div>
+          <div className="text-[9px] text-slate-400 mt-3 px-1">Tap an upcoming game to show or hide its props. Tap a live or finished game for the box score.</div>
         )}
       </div>
     </div>
