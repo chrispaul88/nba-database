@@ -772,7 +772,7 @@ function CompareView({ a, b, color, onSwap }) {
 // "Jalen Johnson: 6+ REB in 90% of games" — built from every box score in the
 // last 30 days. The line shown is the highest one he still clears ≥ 70% of the
 // time, with the next line up beside it so you can see where it drops off.
-const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [2, 4, 6, 8, 10, 12, 14, 16], ast: [2, 4, 6, 8, 10, 12, 14], p3m: [1, 2, 3, 4, 5] };
+const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [4, 6, 8, 10, 12, 14, 16], ast: [2, 4, 6, 8, 10, 12, 14], p3m: [1, 2, 3, 4, 5] };
 const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM" };
 const CS_STATS = ["pts", "reb", "ast", "p3m"];
 function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
