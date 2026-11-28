@@ -841,15 +841,23 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
       const dRank = d != null && defs.length >= 10 ? defs.filter((v) => v < d).length + 1 : null;      // 1 = allows the fewest
       return { k, o, d, oRank, dRank, nO: offs.length, nD: defs.length, tier: tiers.find(([x]) => x === k)[1] };
     });
-    const share3 = (t) => (t && t.fga > 0 && t.p3a != null ? (t.p3a / t.fga) * 100 : null);
-    const s3 = share3(mine), s3all = lg.map(share3).filter((v) => v != null);
-    const s3Rank = s3 != null && s3all.length >= 10 ? s3all.filter((v) => v > s3).length + 1 : null;
-    const style = s3Rank == null ? null : (s3Rank <= 10 ? "Three-point heavy" : s3Rank > s3all.length - 10 ? "Inside-heavy" : "Balanced") + " · " + Math.round(s3) + "% of shots are threes (" + ordinal(s3Rank) + ")";
+    // Identity at a glance: how fast they play, then what they're best at.
+    // Pace = estimated possessions per game (shots − offensive rebounds + turnovers + 0.44 × free throws).
+    const possOf = (t) => (t && t.fga != null && t.tov != null && t.fta != null ? t.fga - (t.oreb || 0) + t.tov + 0.44 * t.fta : null);
+    const rankHi = (fn, t) => { const v = fn(t); const all = lg.map(fn).filter((z) => z != null && z > 0); return v == null || all.length < 10 ? null : { r: all.filter((z) => z > v).length + 1, n: all.length }; };
+    const rankLo = (fn, t) => { const v = fn(t); const all = lg.map(fn).filter((z) => z != null && z > 0); return v == null || all.length < 10 ? null : { r: all.filter((z) => z < v).length + 1, n: all.length }; };
+    const pace = rankHi(possOf, mine);
+    const TRAITS = [["scoring", rankHi((t) => t && t.pts, mine)], ["defense", rankLo((t) => t && t.oppPts, mine)], ["rebounding", rankHi((t) => t && t.reb, mine)], ["passing", rankHi((t) => t && t.ast, mine)],
+      ["three-point shooting", rankHi(made3, mine)], ["getting to the line", rankHi((t) => t && t.fta, mine)], ["forcing turnovers", rankHi((t) => t && t.stl, mine)]].filter(([, k]) => k);
+    const best = TRAITS.slice().sort((x, y) => x[1].r - y[1].r);
+    const top = best.filter(([, k]) => k.r <= 5).slice(0, 2), mid = best.filter(([, k]) => k.r <= 10).slice(0, 2);
+    const strengths = top.length ? "Top 5 in " + top.map(([n]) => n).join(" and ") : mid.length ? "Top 10 in " + mid.map(([n]) => n).join(" and ") : best.length ? "No top-10 strength" : null;
+    const style = [pace ? (pace.r <= 10 ? "Fast pace" : pace.r > pace.n - 10 ? "Slow pace" : "Average pace") + " (" + ordinal(pace.r) + ")" : null, strengths].filter(Boolean).join(" · ") || null;
     const nGreat = tiers.filter(([, t]) => t === "great").length, nTough = tiers.filter(([, t]) => t === "tough").length;
     const edge = nGreat - nTough >= 2 ? "good" : nTough - nGreat >= 2 ? "tough" : nGreat > nTough ? "slightGood" : nTough > nGreat ? "slightTough" : "none";
     const tm = (teams || []).find((t) => !isFaTeam(t) && sameAbbr(t.abbr || toAbbr(t.name), ab));
     const nickname = tm && tm.name ? (/trail/i.test(tm.name) ? "Trail Blazers" : tm.name.trim().split(" ").pop()) : ab;
-    blocks.push({ tape, style, edge, nickname, key: g.id + ab, ab, opp, home: me === "home", date: g.date, live: g.state === "in", rows, b2b: lastRec ? isB2B(lastRec.team, g.date) : false,
+    blocks.push({ mine, theirs, lg, tape, style, edge, nickname, key: g.id + ab, ab, opp, home: me === "home", date: g.date, live: g.state === "in", rows, b2b: lastRec ? isB2B(lastRec.team, g.date) : false,
       great: tiers.filter(([, t]) => t === "great").map(([k]) => CS_LABEL[k]), tough: tiers.filter(([, t]) => t === "tough").map(([k]) => CS_LABEL[k]) });
   }
   const shown = pick && blocks.some((x) => x.ab === pick) ? blocks.filter((x) => x.ab === pick) : blocks;
@@ -865,6 +873,22 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
   // The price where a bet at this hit rate breaks even, in American odds
   const fairOdds = (c) => { if (!c.n || c.h === 0 || c.h === c.n) return "—"; const q = c.h / c.n; return q >= 0.5 ? "-" + Math.round((100 * q) / (1 - q)) : "+" + Math.round((100 * (1 - q)) / q); };
   const toneOf = (c) => { const r = rate(c); return !c.n ? "bg-slate-50 dark:bg-slate-800/50 text-slate-300 dark:text-slate-600" : r >= 90 ? "bg-green-600 text-white" : r >= 80 ? "bg-green-100 text-green-800" : r >= 70 ? "bg-amber-100 text-amber-800" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"; };
+  // Offense-vs-defense rows for the chosen stat: [label, what this team produces, what the opponent allows, is it a percentage]
+  const TAPE_ROWS = {
+    pts: [["PTS/G", (t) => t.pts, (t) => t.oppPts], ["FTA/G", (t) => t.fta, (t) => t.oppFta]],
+    p3m: [["3PM/G", (t) => (t.p3m != null ? t.p3m : t.p3a != null && t.p3 != null ? (t.p3a * t.p3) / 100 : null), (t) => t.opp3pm], ["3PA/G", (t) => t.p3a, (t) => t.opp3pa], ["3P%", (t) => t.p3, (t) => t.opp3p, true]],
+    reb: [["REB/G", (t) => t.reb, (t) => t.oppReb]],
+    ast: [["AST/G", (t) => t.ast, (t) => t.oppAst]],
+  };
+  const tapeFor = (x, k) => TAPE_ROWS[k].map(([lbl, off, def, isPct]) => {
+    const get = (fn, t) => { const v = t ? fn(t) : null; return v == null || !(v > 0) ? null : v; };
+    const o = get(off, x.mine), d = get(def, x.theirs);
+    const offs = x.lg.map((t) => get(off, t)).filter((v) => v != null), defs = x.lg.map((t) => get(def, t)).filter((v) => v != null);
+    const oRank = o != null && offs.length >= 10 ? offs.filter((v) => v > o).length + 1 : null;      // 1 = produces the most
+    const dRank = d != null && defs.length >= 10 ? defs.filter((v) => v < d).length + 1 : null;      // 1 = allows the fewest
+    const tier = dRank == null ? null : dRank > defs.length - 8 ? "great" : dRank <= 8 ? "tough" : null;
+    return { k: lbl, lbl, o, d, oRank, dRank, nO: offs.length, nD: defs.length, tier, isPct };
+  }).filter((t) => t.o != null || t.d != null);
   const STAT_PILLS = [["pts", "Points"], ["p3m", "Threes"], ["reb", "Rebounds"], ["ast", "Assists"]];
   const cellCls = (pct) => (pct >= 90 ? "bg-green-600 text-white" : pct >= 80 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800");
   const pill = (on) => "shrink-0 px-3 py-1.5 rounded-full text-[11px] font-extrabold border " + (on ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800");
@@ -1018,19 +1042,21 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
             {TEAM_LOGOS[modernAbbr(x.ab)] || TEAM_LOGOS[x.ab] ? <img src={TEAM_LOGOS[modernAbbr(x.ab)] || TEAM_LOGOS[x.ab]} alt="" className="w-9 h-9 object-contain shrink-0" style={logoTrim(x.ab)} /> : null}
             <span className="flex-1 min-w-0">
               <span className="block text-[14px] font-black tracking-wide uppercase leading-tight truncate">{x.nickname} offense</span>
-              <span className="block text-[11px] font-semibold text-white/85 leading-tight truncate">{x.style || `${x.home ? "vs" : "@"} ${x.opp}`}</span>
+              <span className="block text-[11px] font-semibold text-white/85 leading-snug">{x.style || `${x.home ? "vs" : "@"} ${x.opp}`}</span>
             </span>
             {x.b2b && <span className="px-1.5 py-0.5 rounded-full text-[9px] font-extrabold bg-orange-500 text-white shrink-0">B2B</span>}
           </div>
-          {/* verdict */}
-          <div className={"px-3 py-1.5 text-[11px] font-extrabold tracking-widest uppercase bg-slate-100 dark:bg-slate-800/70 " + (x.edge === "good" || x.edge === "slightGood" ? "text-green-600" : x.edge === "tough" || x.edge === "slightTough" ? "text-red-500" : "text-slate-500 dark:text-slate-300")}>
-            {{ good: "Good spot", slightGood: "Slight edge", tough: "Tough spot", slightTough: "Slightly tough", none: "No clear edge" }[x.edge]}
-          </div>
+          {/* verdict for the chosen stat */}
+          {(() => { const t = x.tape.find((y) => y.k === stat); const tier = t && t.tier; const word = STAT_PILLS.find(([k]) => k === stat)[1].toLowerCase(); return (
+            <div className={"px-3 py-1.5 text-[11px] font-extrabold tracking-widest uppercase bg-slate-100 dark:bg-slate-800/70 " + (tier === "great" ? "text-green-600" : tier === "tough" ? "text-red-500" : "text-slate-500 dark:text-slate-300")}>
+              {tier === "great" ? `Great matchup for ${word}` : tier === "tough" ? `Tough matchup for ${word}` : `No clear edge for ${word}`}
+            </div>
+          ); })()}
           {/* tale of the tape: this offense on the left, what the other defense allows on the right */}
-          {x.tape.some((t) => t.o != null || t.d != null) && (
+          {tapeFor(x, stat).length > 0 && (
             <div className="px-3 pt-2 pb-1">
               <div className="flex justify-between text-[9px] font-extrabold tracking-widest uppercase text-slate-400 mb-1"><span>{x.ab} offense</span><span>{x.opp} defense allows</span></div>
-              {x.tape.map((t) => {
+              {tapeFor(x, stat).map((t) => {
                 const oTone = t.oRank == null ? "text-slate-900 dark:text-white" : t.oRank <= 10 ? "text-green-600" : t.oRank > t.nO - 10 ? "text-red-500" : "text-slate-900 dark:text-white";
                 const dTone = t.dRank == null ? "text-slate-900 dark:text-white" : t.dRank <= 10 ? "text-red-500" : t.dRank > t.nD - 10 ? "text-green-600" : "text-slate-900 dark:text-white";
                 const bar = (tone) => (/green/.test(tone) ? "#16a34a" : /red/.test(tone) ? "#ef4444" : "#94a3b8");
@@ -1038,15 +1064,15 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
                 return (
                   <div key={t.k} className="flex items-center gap-2 py-1.5">
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline gap-1"><span className={"text-[16px] font-black tabular-nums leading-none " + oTone}>{t.o != null ? fmt1(t.o) : "—"}</span>{t.oRank && <span className="text-[10px] font-bold text-slate-400">({ordinal(t.oRank)})</span>}</div>
+                      <div className="flex items-baseline gap-1"><span className={"text-[16px] font-black tabular-nums leading-none " + oTone}>{t.o != null ? fmt1(t.o) + (t.isPct ? "%" : "") : "—"}</span>{t.oRank && <span className="text-[10px] font-bold text-slate-400">({ordinal(t.oRank)})</span>}</div>
                       <div className="mt-1 h-1 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden"><div className="h-full rounded-full" style={{ width: oPct + "%", backgroundColor: bar(oTone) }} /></div>
                     </div>
                     <div className="w-[62px] shrink-0 text-center">
-                      <div className="text-[9px] font-extrabold tracking-widest text-slate-500 dark:text-slate-300 uppercase leading-tight">{CS_LABEL[t.k]}/G</div>
+                      <div className="text-[9px] font-extrabold tracking-widest text-slate-500 dark:text-slate-300 uppercase leading-tight">{t.lbl}</div>
                       {t.tier && <div className={"text-[9px] font-extrabold tracking-widest uppercase leading-tight " + (t.tier === "great" ? "text-green-600" : "text-red-500")}>{t.tier === "great" ? "Great" : "Tough"}</div>}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline gap-1 justify-end">{t.dRank && <span className="text-[10px] font-bold text-slate-400">({ordinal(t.dRank)})</span>}<span className={"text-[16px] font-black tabular-nums leading-none " + dTone}>{t.d != null ? fmt1(t.d) : "—"}</span></div>
+                      <div className="flex items-baseline gap-1 justify-end">{t.dRank && <span className="text-[10px] font-bold text-slate-400">({ordinal(t.dRank)})</span>}<span className={"text-[16px] font-black tabular-nums leading-none " + dTone}>{t.d != null ? fmt1(t.d) + (t.isPct ? "%" : "") : "—"}</span></div>
                       <div className="mt-1 h-1 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden flex justify-end"><div className="h-full rounded-full" style={{ width: dPct + "%", backgroundColor: bar(dTone) }} /></div>
                     </div>
                   </div>
@@ -1056,7 +1082,7 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
           )}
           <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
             <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">Player props · {STAT_PILLS.find(([k]) => k === stat)[1]}</span>
-            {(() => { const t = x.tape.find((y) => y.k === stat); return t && t.tier ? <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase " + (t.tier === "great" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600")}>{t.tier === "great" ? "Great matchup" : "Tough matchup"}</span> : null; })()}
+            <span className="text-[9px] font-semibold text-slate-400">tap a player for more lines</span>
           </div>
           {x.rows.length > 0 && (
             <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-y border-slate-100 dark:border-slate-800 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">
