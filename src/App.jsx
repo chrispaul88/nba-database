@@ -776,6 +776,8 @@ const CS_LINES = { pts: [5, 10, 15, 20, 25, 30, 35, 40], reb: [4, 6, 8, 10, 12, 
 const CS_LABEL = { pts: "PTS", reb: "REB", ast: "AST", p3m: "3PM" };
 const CS_STATS = ["pts", "reb", "ast", "p3m"];
 function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
+  const [stat, setStat] = useState("pts");               // which prop the tables show: pts · p3m · reb · ast
+  const [openRow, setOpenRow] = useState(null);          // the player whose full ladder of lines is open
   const [pick, setPick] = useState(null);                // one team, or null for the whole slate
   const floor = 70;                                      // a prop shows when it has hit in at least 70% of his games
   const [data, setData] = useState(null);
@@ -819,15 +821,10 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
       if (!sameAbbr(rec.team, ab) || rec.g.length < 3) continue;
       const p = (players || []).find((x) => espnNrm(x.name) === espnNrm(rec.name));
       if (p && healthOf(p) === "out") continue;
-      const props = {}; let any = false;
-      for (const k of CS_STATS) {
-        const vals = rec.g.map((gm) => gm[k] || 0);
-        let best = null;
-        for (const L of CS_LINES[k]) { const pct = Math.round((vals.filter((v) => v >= L).length / vals.length) * 100); if (pct >= floor) best = { L, pct }; }
-        if (best) { props[k] = best; any = true; }
-      }
-      if (!any) continue;
-      rows.push({ rec, p, props, gp: rec.g.length, min: rec.g.reduce((x, y) => x + y.min, 0) / rec.g.length });
+      const avg = (list) => (list.length ? list.reduce((x, y) => x + (y.min || 0), 0) / list.length : 0);
+      const min = avg(rec.g), min5 = avg(rec.g.slice(-5));
+      if (min < 12 && min5 < 12) continue;                 // rotation players only
+      rows.push({ rec, p, gp: rec.g.length, min, min5 });
     }
     rows.sort((x, y) => y.min - x.min);
     const lastRec = data.players.find((r) => sameAbbr(r.team, ab));
@@ -856,15 +853,32 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
       great: tiers.filter(([, t]) => t === "great").map(([k]) => CS_LABEL[k]), tough: tiers.filter(([, t]) => t === "tough").map(([k]) => CS_LABEL[k]) });
   }
   const shown = pick && blocks.some((x) => x.ab === pick) ? blocks.filter((x) => x.ab === pick) : blocks;
+  // Hit counts for one player at one line: last 5, last 10, season (games are oldest → newest)
+  const hitsOf = (rec, k, L) => {
+    const vals = rec.g.map((gm) => gm[k] || 0);
+    const cut = (n) => { const v = vals.slice(-n); return { h: v.filter((x) => x >= L).length, n: v.length }; };
+    return { l5: cut(5), l10: cut(10), all: cut(vals.length) };
+  };
+  const rate = (c) => (c.n ? Math.round((c.h / c.n) * 100) : 0);
+  // The default line: the highest one he has cleared in 70% or more of his games this season
+  const defaultLine = (rec, k) => { let best = null; for (const L of CS_LINES[k]) if (rate(hitsOf(rec, k, L).all) >= floor) best = L; return best; };
+  // The price where a bet at this hit rate breaks even, in American odds
+  const fairOdds = (c) => { if (!c.n || c.h === 0 || c.h === c.n) return "—"; const q = c.h / c.n; return q >= 0.5 ? "-" + Math.round((100 * q) / (1 - q)) : "+" + Math.round((100 * (1 - q)) / q); };
+  const toneOf = (c) => { const r = rate(c); return !c.n ? "bg-slate-50 dark:bg-slate-800/50 text-slate-300 dark:text-slate-600" : r >= 90 ? "bg-green-600 text-white" : r >= 80 ? "bg-green-100 text-green-800" : r >= 70 ? "bg-amber-100 text-amber-800" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"; };
+  const STAT_PILLS = [["pts", "Points"], ["p3m", "Threes"], ["reb", "Rebounds"], ["ast", "Assists"]];
   const cellCls = (pct) => (pct >= 90 ? "bg-green-600 text-white" : pct >= 80 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800");
   const pill = (on) => "shrink-0 px-3 py-1.5 rounded-full text-[11px] font-extrabold border " + (on ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800");
   return (
     <div className={embedded ? "pt-2" : "px-4 pt-3 pb-28"}>
-      {embedded ? (
+      {embedded ? (<>
         <div className="flex items-center gap-1 mb-2 px-1">
           <span className="text-[11px] font-extrabold tracking-widest uppercase text-blue-500">Matchup breakdown</span>
           {onMatchup && <button onClick={onMatchup} className="ml-auto px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-blue-600 text-white">Face-off ›</button>}
         </div>
+        <div className="flex gap-1.5 mb-2">
+          {STAT_PILLS.map(([k, lbl]) => <button key={k} onClick={() => { setStat(k); setOpenRow(null); }} className={"flex-1 py-1.5 rounded-full text-[11px] font-extrabold border " + (stat === k ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800")}>{lbl}</button>)}
+        </div>
+      </>
       ) : (<>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[12px] font-extrabold tracking-widest text-slate-900 dark:text-white uppercase">Props by team</span>
@@ -920,38 +934,65 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
             </div>
           )}
           <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
-            <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">Player props</span>
-            <span className="text-[9px] font-semibold text-slate-400">hit in 70%+ of games</span>
+            <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">Player props · {STAT_PILLS.find(([k]) => k === stat)[1]}</span>
+            {(() => { const t = x.tape.find((y) => y.k === stat); return t && t.tier ? <span className={"px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase " + (t.tier === "great" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600")}>{t.tier === "great" ? "Great matchup" : "Tough matchup"}</span> : null; })()}
           </div>
           {x.rows.length > 0 && (
-            <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-y border-slate-100 dark:border-slate-800">
-              <span className="flex-1 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">Player</span>
-              {CS_STATS.map((k) => <span key={k} className="w-[42px] text-center text-[9px] font-extrabold tracking-widest text-slate-400">{CS_LABEL[k]}</span>)}
+            <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-y border-slate-100 dark:border-slate-800 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">
+              <span className="flex-1">Player</span><span className="w-10 text-center">Line</span><span className="w-10 text-center">L5</span><span className="w-11 text-center">L10</span><span className="w-[50px] text-center">Season</span>
             </div>
           )}
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {x.rows.map((r) => (
-              <button key={r.rec.name} onClick={() => r.p && onSelect(r.p)} className="w-full flex items-center gap-1 px-3 py-1.5 text-left active:bg-slate-50 dark:active:bg-slate-800">
-                {r.p ? <span className="shrink-0 mr-1"><Avatar p={r.p} size="sm" /></span> : <span className="w-8 h-8 mr-1 rounded-full bg-slate-100 dark:bg-slate-800 shrink-0" />}
-                <span className="flex-1 min-w-0">
-                  <span className="flex items-center gap-1 min-w-0">
-                    <span className="text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
-                  </span>
-                  {r.p && isSidelined(r.p)
-                    ? <span className="flex items-center gap-1 mt-0.5"><StatusBadge status={effectiveStatus(r.p)} /><span className="text-[10px] text-slate-400 truncate">{Math.round(r.min)} min</span></span>
-                    : <span className="block text-[10px] text-slate-400 truncate">{r.p && courtPos(r.p) ? courtPos(r.p) + " · " : ""}{r.gp} gp · {Math.round(r.min)} min</span>}
-                </span>
-                {CS_STATS.map((k) => { const b = r.props[k]; return (
-                  <span key={k} className={"w-[42px] h-9 rounded-lg flex flex-col items-center justify-center shrink-0 " + (b ? cellCls(b.pct) : "bg-slate-50 dark:bg-slate-800/50 text-slate-300 dark:text-slate-600")}>
-                    {b ? <><span className="text-[13px] font-extrabold leading-none tabular-nums">{b.L}+</span><span className="text-[9px] font-bold leading-none mt-0.5 tabular-nums">{b.pct}%</span></> : <span className="text-[12px] font-bold">–</span>}
-                  </span>
-                ); })}
-              </button>
-            ))}
-            {x.rows.length === 0 && <div className="text-center text-[11px] text-slate-400 py-4 px-3">No {x.ab} player clears a line {floor}% of the time yet.</div>}
+            {x.rows.map((r) => {
+              const dl = defaultLine(r.rec, stat); const L = dl ?? CS_LINES[stat][0]; const h = hitsOf(r.rec, stat, L);
+              const rowKey = x.key + r.rec.name; const isOpen = openRow === rowKey;
+              const swing = r.min5 - r.min; const ix = CS_LINES[stat].indexOf(L);
+              const ladder = CS_LINES[stat].slice(Math.max(0, ix - 1), ix + 3);
+              const last5 = r.rec.g.slice(-5).reverse().map((gm) => gm[stat] || 0);
+              const Cell = ({ c, w, big }) => <span className={w + " h-9 rounded-lg flex flex-col items-center justify-center shrink-0 " + toneOf(c)}><span className="text-[12px] font-extrabold leading-none tabular-nums">{c.h}/{c.n}</span>{big && <span className="text-[9px] font-bold leading-none mt-0.5 tabular-nums">{rate(c)}%</span>}</span>;
+              return (
+                <div key={r.rec.name}>
+                  <button onClick={() => setOpenRow(isOpen ? null : rowKey)} className="w-full flex items-center gap-1 px-3 py-1.5 text-left active:bg-slate-50 dark:active:bg-slate-800">
+                    {r.p ? <span className="shrink-0 mr-1"><Avatar p={r.p} size="sm" /></span> : <span className="w-8 h-8 mr-1 rounded-full bg-slate-100 dark:bg-slate-800 shrink-0" />}
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
+                      {r.p && isSidelined(r.p)
+                        ? <span className="flex items-center gap-1 mt-0.5"><StatusBadge status={effectiveStatus(r.p)} /></span>
+                        : <span className="block text-[10px] text-slate-400 truncate">{Math.round(r.min)} min{Math.abs(swing) >= 4 ? <span className={swing > 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}> · L5 {Math.round(r.min5)}</span> : null}</span>}
+                    </span>
+                    <span className={"w-10 text-center text-[14px] font-black tabular-nums " + (dl == null ? "text-slate-400" : "text-slate-900 dark:text-white")}>{L}+</span>
+                    <Cell c={h.l5} w="w-10" /><Cell c={h.l10} w="w-11" /><Cell c={h.all} w="w-[50px]" big />
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-2.5 pt-1 bg-slate-50 dark:bg-slate-800/40">
+                      <div className="flex items-center gap-1 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase py-1">
+                        <span className="w-10">Line</span><span className="flex-1 text-center">L5</span><span className="flex-1 text-center">L10</span><span className="flex-1 text-center">Season</span><span className="w-[74px] text-right whitespace-nowrap tracking-normal">Break-even</span>
+                      </div>
+                      {ladder.map((LL) => { const hh = hitsOf(r.rec, stat, LL); return (
+                        <div key={LL} className={"flex items-center gap-1 py-1 rounded-md " + (LL === L ? "bg-white dark:bg-slate-900 shadow-sm" : "")}>
+                          <span className="w-10 pl-1 text-[13px] font-black tabular-nums text-slate-900 dark:text-white">{LL}+</span>
+                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l5.h}/{hh.l5.n}</span>
+                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l10.h}/{hh.l10.n}</span>
+                          <span className={"flex-1 text-center text-[12px] font-extrabold tabular-nums " + (rate(hh.all) >= 70 ? "text-green-600" : rate(hh.all) < 40 ? "text-red-500" : "text-slate-700 dark:text-slate-200")}>{hh.all.h}/{hh.all.n} · {rate(hh.all)}%</span>
+                          <span className="w-[74px] pr-1 text-right text-[12px] font-bold tabular-nums text-slate-500 dark:text-slate-300">{fairOdds(hh.all)}</span>
+                        </div>
+                      ); })}
+                      <div className="flex items-center gap-1 mt-2">
+                        <span className="text-[9px] font-extrabold tracking-widest text-slate-400 uppercase mr-1 whitespace-nowrap">Last 5</span>
+                        {last5.map((v, i) => <span key={i} className={"w-8 h-7 rounded-md flex items-center justify-center text-[11px] font-extrabold tabular-nums " + (v >= L ? "bg-green-100 text-green-800" : "bg-red-100 text-red-600")}>{v}</span>)}
+                        <span className="text-[9px] text-slate-400 ml-0.5 whitespace-nowrap">← newest</span>
+                        {r.p && <button onClick={() => onSelect(r.p)} className="ml-auto text-[11px] font-extrabold text-blue-500 whitespace-nowrap">Game log ›</button>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {x.rows.length === 0 && <div className="text-center text-[11px] text-slate-400 py-4 px-3">No {x.ab} game logs yet.</div>}
           </div>
         </div>
       ))}
+      {blocks.length > 0 && <div className="text-[9px] text-slate-400 px-1 -mt-1 mb-3 leading-snug">Line = the highest one he has hit in 70% or more of his games this season (gray if none). Tap a player for the lines around it. Break-even is the price where a bet at his season rate pays nothing over time; a better price than that is in your favor.</div>}
       {blocks.length === 0 && <div className="text-center text-xs text-slate-400 py-10 px-4">No games left on this day.</div>}
       {blocks.length > 0 && data.players.length === 0 && <div className="text-center text-[11px] text-slate-400 py-2 px-4">Checked {data.scanned ?? 0} games since {data.from ? new Date(data.from).toLocaleDateString([], { month: "short", day: "numeric" }) : "?"} and read {data.games ?? 0} box scores for these teams.</div>}
     </div>
