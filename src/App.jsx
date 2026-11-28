@@ -868,6 +868,110 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
   const STAT_PILLS = [["pts", "Points"], ["p3m", "Threes"], ["reb", "Rebounds"], ["ast", "Assists"]];
   const cellCls = (pct) => (pct >= 90 ? "bg-green-600 text-white" : pct >= 80 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800");
   const pill = (on) => "shrink-0 px-3 py-1.5 rounded-full text-[11px] font-extrabold border " + (on ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800");
+  // One player row (line · L5 · L10 · season) with its tap-to-open ladder. Used by the matchup
+  // breakdown (default line = 70% rule) and by the cheat sheet (pickLine = the 80% line, plus tags).
+  const renderRow = (r, x, pickLine, tags) => {
+              const dl = pickLine != null ? pickLine : defaultLine(r.rec, stat); const L = dl ?? CS_LINES[stat][0]; const h = hitsOf(r.rec, stat, L);
+              const rowKey = x.key + r.rec.name + (pickLine != null ? "pick" : ""); const isOpen = openRow === rowKey;
+              const swing = r.min5 - r.min; const ix = CS_LINES[stat].indexOf(L);
+              const ladder = CS_LINES[stat].slice(Math.max(0, ix - 1), ix + 3);
+              const last5 = r.rec.g.slice(-5).reverse().map((gm) => gm[stat] || 0);
+              const Cell = ({ c, w, big }) => <span className={w + " h-9 rounded-lg flex flex-col items-center justify-center shrink-0 " + toneOf(c)}><span className="text-[12px] font-extrabold leading-none tabular-nums">{c.h}/{c.n}</span>{big && <span className="text-[9px] font-bold leading-none mt-0.5 tabular-nums">{rate(c)}%</span>}</span>;
+              return (
+                <div key={x.key + r.rec.name}>
+                  <button onClick={() => setOpenRow(isOpen ? null : rowKey)} className="w-full flex items-center gap-1 px-3 py-1.5 text-left active:bg-slate-50 dark:active:bg-slate-800">
+                    {r.p ? <span className="shrink-0 mr-1"><Avatar p={r.p} size="sm" /></span> : <span className="w-8 h-8 mr-1 rounded-full bg-slate-100 dark:bg-slate-800 shrink-0" />}
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
+                      {pickLine != null
+                        ? <span className="flex flex-wrap items-center gap-x-1 gap-y-0.5 mt-0.5 min-w-0">
+                            <span className="text-[10px] text-slate-400 whitespace-nowrap">{x.ab} {x.home ? "vs" : "@"} {x.opp}</span>
+                            {r.p && isSidelined(r.p) && <StatusBadge status={effectiveStatus(r.p)} />}
+                            {tags && tags.map((t) => <span key={t[0]} className={"px-1 py-px rounded text-[8px] font-extrabold uppercase whitespace-nowrap " + t[1]}>{t[0]}</span>)}
+                          </span>
+                        : r.p && isSidelined(r.p)
+                        ? <span className="flex items-center gap-1 mt-0.5"><StatusBadge status={effectiveStatus(r.p)} /></span>
+                        : <span className="block text-[10px] text-slate-400 truncate">{Math.round(r.min)} min{Math.abs(swing) >= 4 ? <span className={swing > 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}> · L5 {Math.round(r.min5)}</span> : null}</span>}
+                    </span>
+                    <span className={"w-10 text-center text-[14px] font-black tabular-nums " + (dl == null ? "text-slate-400" : "text-slate-900 dark:text-white")}>{L}+</span>
+                    <Cell c={h.l5} w="w-10" /><Cell c={h.l10} w="w-11" /><Cell c={h.all} w="w-[50px]" big />
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-2.5 pt-1 bg-slate-50 dark:bg-slate-800/40">
+                      <div className="flex items-center gap-1 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase py-1">
+                        <span className="w-10">Line</span><span className="flex-1 text-center">L5</span><span className="flex-1 text-center">L10</span><span className="flex-1 text-center">Season</span><span className="w-[74px] text-right whitespace-nowrap tracking-normal">Break-even</span>
+                      </div>
+                      {ladder.map((LL) => { const hh = hitsOf(r.rec, stat, LL); return (
+                        <div key={LL} className={"flex items-center gap-1 py-1 rounded-md " + (LL === L ? "bg-white dark:bg-slate-900 shadow-sm" : "")}>
+                          <span className="w-10 pl-1 text-[13px] font-black tabular-nums text-slate-900 dark:text-white">{LL}+</span>
+                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l5.h}/{hh.l5.n}</span>
+                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l10.h}/{hh.l10.n}</span>
+                          <span className={"flex-1 text-center text-[12px] font-extrabold tabular-nums " + (rate(hh.all) >= 70 ? "text-green-600" : rate(hh.all) < 40 ? "text-red-500" : "text-slate-700 dark:text-slate-200")}>{hh.all.h}/{hh.all.n} · {rate(hh.all)}%</span>
+                          <span className="w-[74px] pr-1 text-right text-[12px] font-bold tabular-nums text-slate-500 dark:text-slate-300">{fairOdds(hh.all)}</span>
+                        </div>
+                      ); })}
+                      <div className="flex items-center gap-1 mt-2">
+                        <span className="text-[9px] font-extrabold tracking-widest text-slate-400 uppercase mr-1 whitespace-nowrap">Last 5</span>
+                        {last5.map((v, i) => <span key={i} className={"w-8 h-7 rounded-md flex items-center justify-center text-[11px] font-extrabold tabular-nums " + (v >= L ? "bg-green-100 text-green-800" : "bg-red-100 text-red-600")}>{v}</span>)}
+                        <span className="text-[9px] text-slate-400 ml-0.5 whitespace-nowrap">← newest</span>
+                        {r.p && <button onClick={() => onSelect(r.p)} className="ml-auto text-[11px] font-extrabold text-blue-500 whitespace-nowrap">Game log ›</button>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+  };
+  // ── Cheat sheet (the whole slate): only props with a high hit rate ──
+  // A prop makes the sheet when he has cleared the line in 80%+ of his games this season (5+ games),
+  // 70%+ of his last 10, and he plays real minutes. The line is the highest one that passes.
+  if (!embedded) {
+    const FLOOR_LINE = { pts: 10, reb: 4, ast: 4, p3m: 1 };          // skip lines too low to be worth a bet
+    const picks = [];
+    for (const x of blocks) {
+      if (x.live) continue;
+      const tier = (x.tape.find((t) => t.k === stat) || {}).tier;
+      for (const r of x.rows) {
+        if (r.gp < 5 || Math.max(r.min, r.min5) < 18) continue;
+        let Lp = null;
+        for (const LL of CS_LINES[stat]) { if (LL < FLOOR_LINE[stat]) continue; const hh = hitsOf(r.rec, stat, LL); if (rate(hh.all) >= 80 && rate(hh.l10) >= 70) Lp = LL; }
+        if (Lp == null) continue;
+        const hh = hitsOf(r.rec, stat, Lp);
+        const swing = r.min5 - r.min;
+        const tags = [];
+        if (tier === "great") tags.push(["Great", "bg-green-100 text-green-700"]);
+        if (tier === "tough") tags.push(["Tough", "bg-red-100 text-red-600"]);
+        if (x.b2b) tags.push(["B2B", "bg-orange-500 text-white"]);
+        if (swing <= -4) tags.push(["Min ↓", "bg-red-100 text-red-600"]);
+        const score = 0.6 * rate(hh.all) + 0.4 * rate(hh.l10) + (tier === "great" ? 5 : tier === "tough" ? -5 : 0) - (x.b2b ? 3 : 0) - (swing <= -4 ? 4 : 0);
+        picks.push({ r, x, Lp, tags, score });
+      }
+    }
+    picks.sort((a, b) => b.score - a.score || b.r.min - a.r.min);
+    const label = STAT_PILLS.find(([k]) => k === stat)[1];
+    return (
+      <div>
+        <div className="flex gap-1.5 mb-2">
+          {STAT_PILLS.map(([k, lbl]) => <button key={k} onClick={() => { setStat(k); setOpenRow(null); }} className={"flex-1 py-1.5 rounded-full text-[11px] font-extrabold border " + (stat === k ? "bg-blue-600 text-white border-transparent" : "bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-800")}>{lbl}</button>)}
+        </div>
+        <div className="flex items-baseline justify-between px-1 mb-1.5">
+          <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">{label} · {picks.length} high-probability {picks.length === 1 ? "prop" : "props"}</span>
+          <span className="text-[9px] font-semibold text-slate-400">strongest first</span>
+        </div>
+        {picks.length > 0 ? (
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+            <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">
+              <span className="flex-1">Player</span><span className="w-10 text-center">Line</span><span className="w-10 text-center">L5</span><span className="w-11 text-center">L10</span><span className="w-[50px] text-center">Season</span>
+            </div>
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">{picks.map((k) => renderRow(k.r, k.x, k.Lp, k.tags))}</div>
+          </div>
+        ) : (
+          <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-center text-xs text-slate-400">{blocks.some((x) => !x.live) ? `No ${label.toLowerCase()} prop clears the bar for these games.` : "No games left to tip off on this day."}</div>
+        )}
+        <div className="text-[9px] text-slate-400 px-1 mt-2 leading-snug">On the sheet: hit the line in 80% or more of his games this season and 70% or more of his last 10, at least 5 games, 18+ minutes a night. Players ruled out are left off. Order is by season and last-10 rate, moved up for a great matchup and down for a tough matchup, a back-to-back, or falling minutes. Great / Tough is how much the opponent allows in that stat. Tap a player for the lines around his and the break-even price.</div>
+      </div>
+    );
+  }
+
   return (
     <div className={embedded ? "pt-2" : "px-4 pt-3 pb-28"}>
       {embedded ? (<>
@@ -943,51 +1047,7 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
             </div>
           )}
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {x.rows.map((r) => {
-              const dl = defaultLine(r.rec, stat); const L = dl ?? CS_LINES[stat][0]; const h = hitsOf(r.rec, stat, L);
-              const rowKey = x.key + r.rec.name; const isOpen = openRow === rowKey;
-              const swing = r.min5 - r.min; const ix = CS_LINES[stat].indexOf(L);
-              const ladder = CS_LINES[stat].slice(Math.max(0, ix - 1), ix + 3);
-              const last5 = r.rec.g.slice(-5).reverse().map((gm) => gm[stat] || 0);
-              const Cell = ({ c, w, big }) => <span className={w + " h-9 rounded-lg flex flex-col items-center justify-center shrink-0 " + toneOf(c)}><span className="text-[12px] font-extrabold leading-none tabular-nums">{c.h}/{c.n}</span>{big && <span className="text-[9px] font-bold leading-none mt-0.5 tabular-nums">{rate(c)}%</span>}</span>;
-              return (
-                <div key={r.rec.name}>
-                  <button onClick={() => setOpenRow(isOpen ? null : rowKey)} className="w-full flex items-center gap-1 px-3 py-1.5 text-left active:bg-slate-50 dark:active:bg-slate-800">
-                    {r.p ? <span className="shrink-0 mr-1"><Avatar p={r.p} size="sm" /></span> : <span className="w-8 h-8 mr-1 rounded-full bg-slate-100 dark:bg-slate-800 shrink-0" />}
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-[13px] font-bold text-slate-900 dark:text-white truncate">{r.rec.name}</span>
-                      {r.p && isSidelined(r.p)
-                        ? <span className="flex items-center gap-1 mt-0.5"><StatusBadge status={effectiveStatus(r.p)} /></span>
-                        : <span className="block text-[10px] text-slate-400 truncate">{Math.round(r.min)} min{Math.abs(swing) >= 4 ? <span className={swing > 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}> · L5 {Math.round(r.min5)}</span> : null}</span>}
-                    </span>
-                    <span className={"w-10 text-center text-[14px] font-black tabular-nums " + (dl == null ? "text-slate-400" : "text-slate-900 dark:text-white")}>{L}+</span>
-                    <Cell c={h.l5} w="w-10" /><Cell c={h.l10} w="w-11" /><Cell c={h.all} w="w-[50px]" big />
-                  </button>
-                  {isOpen && (
-                    <div className="px-3 pb-2.5 pt-1 bg-slate-50 dark:bg-slate-800/40">
-                      <div className="flex items-center gap-1 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase py-1">
-                        <span className="w-10">Line</span><span className="flex-1 text-center">L5</span><span className="flex-1 text-center">L10</span><span className="flex-1 text-center">Season</span><span className="w-[74px] text-right whitespace-nowrap tracking-normal">Break-even</span>
-                      </div>
-                      {ladder.map((LL) => { const hh = hitsOf(r.rec, stat, LL); return (
-                        <div key={LL} className={"flex items-center gap-1 py-1 rounded-md " + (LL === L ? "bg-white dark:bg-slate-900 shadow-sm" : "")}>
-                          <span className="w-10 pl-1 text-[13px] font-black tabular-nums text-slate-900 dark:text-white">{LL}+</span>
-                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l5.h}/{hh.l5.n}</span>
-                          <span className="flex-1 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{hh.l10.h}/{hh.l10.n}</span>
-                          <span className={"flex-1 text-center text-[12px] font-extrabold tabular-nums " + (rate(hh.all) >= 70 ? "text-green-600" : rate(hh.all) < 40 ? "text-red-500" : "text-slate-700 dark:text-slate-200")}>{hh.all.h}/{hh.all.n} · {rate(hh.all)}%</span>
-                          <span className="w-[74px] pr-1 text-right text-[12px] font-bold tabular-nums text-slate-500 dark:text-slate-300">{fairOdds(hh.all)}</span>
-                        </div>
-                      ); })}
-                      <div className="flex items-center gap-1 mt-2">
-                        <span className="text-[9px] font-extrabold tracking-widest text-slate-400 uppercase mr-1 whitespace-nowrap">Last 5</span>
-                        {last5.map((v, i) => <span key={i} className={"w-8 h-7 rounded-md flex items-center justify-center text-[11px] font-extrabold tabular-nums " + (v >= L ? "bg-green-100 text-green-800" : "bg-red-100 text-red-600")}>{v}</span>)}
-                        <span className="text-[9px] text-slate-400 ml-0.5 whitespace-nowrap">← newest</span>
-                        {r.p && <button onClick={() => onSelect(r.p)} className="ml-auto text-[11px] font-extrabold text-blue-500 whitespace-nowrap">Game log ›</button>}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {x.rows.map((r) => renderRow(r, x))}
             {x.rows.length === 0 && <div className="text-center text-[11px] text-slate-400 py-4 px-3">No {x.ab} game logs yet.</div>}
           </div>
         </div>
@@ -4262,6 +4322,7 @@ function dayLabel(d, today) {
 function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
   const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
   const [dayOff, setDayOff] = useState(0);           // days from today
+  const [view, setView] = useState("matchups");      // matchups (the games) or cheat (the day's high-probability props)
   const [openProps, setOpenProps] = useState({});    // game id → props panel open
   const [sb, setSb] = useState(null);
   const days = useMemo(() => Array.from({ length: 8 }, (_, i) => { const d = new Date(today); d.setDate(d.getDate() + i - 1); return d; }), [today]);
@@ -4312,11 +4373,19 @@ function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
             );
           })}
         </div>
+        <div className="flex gap-2 mt-2.5">
+          {[["matchups", "Matchups"], ["cheat", "Cheat Sheet"]].map(([k, lbl]) => (
+            <button key={k} onClick={() => setView(k)} className={"flex-1 py-1.5 rounded-full text-[12px] font-extrabold " + (view === k ? "bg-white text-blue-700" : "bg-blue-500/60 text-blue-100 active:bg-blue-500")}>{lbl}</button>
+          ))}
+        </div>
       </div>
 
       <div className="px-4 pt-3 pb-28">
         <style>{`@keyframes hrbRise { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes hrbPing { 75%, 100% { transform: scale(2.2); opacity: 0; } }`}</style>
+        {view === "cheat" && sb && !sb.error && games.length > 0 && !preseason
+          ? <CheatSheet games={games} teams={teams} players={players} onSelect={onSelect} />
+          : (<>
         {!sb && <div className="p-6 text-center text-xs text-slate-400">Loading games…</div>}
         {sb && sb.error && (
           <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 text-center">
@@ -4419,6 +4488,7 @@ function TonightTab({ players, teams, onSelect, onSelectTeam, onOpenGame }) {
         {games.length > 0 && (
           <div className="text-[9px] text-slate-400 mt-3 px-1">Tap an upcoming game to show or hide its matchup breakdown. Tap a live or finished game for the box score.</div>
         )}
+          </>)}
       </div>
     </div>
   );
