@@ -947,6 +947,14 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
       }
     }
     picks.sort((a, b) => b.score - a.score || b.r.min - a.r.min);
+    // Grouped by tip-off time, earliest first; strongest first inside each group
+    const slots = [];
+    for (const x of blocks.filter((b) => !b.live).sort((a, b) => new Date(a.date) - new Date(b.date))) {
+      const t = Math.floor(new Date(x.date).getTime() / 60000);
+      let slot = slots.find((sl) => sl.t === t); if (!slot) slots.push((slot = { t, date: x.date, games: [], picks: [] }));
+      const gm = x.home ? `${x.opp} @ ${x.ab}` : `${x.ab} @ ${x.opp}`; if (!slot.games.includes(gm)) slot.games.push(gm);
+    }
+    for (const k of picks) { const t = Math.floor(new Date(k.x.date).getTime() / 60000); const slot = slots.find((sl) => sl.t === t); if (slot) slot.picks.push(k); }
     const label = STAT_PILLS.find(([k]) => k === stat)[1];
     return (
       <div>
@@ -955,19 +963,28 @@ function CheatSheet({ games, teams, players, onSelect, embedded, onMatchup }) {
         </div>
         <div className="flex items-baseline justify-between px-1 mb-1.5">
           <span className="text-[11px] font-extrabold tracking-widest uppercase text-slate-900 dark:text-white">{label} · {picks.length} high-probability {picks.length === 1 ? "prop" : "props"}</span>
-          <span className="text-[9px] font-semibold text-slate-400">strongest first</span>
+          <span className="text-[9px] font-semibold text-slate-400 whitespace-nowrap">by tip-off</span>
         </div>
         {picks.length > 0 ? (
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">
-              <span className="flex-1">Player</span><span className="w-10 text-center">Line</span><span className="w-10 text-center">L5</span><span className="w-11 text-center">L10</span><span className="w-[50px] text-center">Season</span>
+          slots.map((sl) => (
+            <div key={sl.t} className="mb-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="flex items-baseline gap-2 px-3 py-2 bg-slate-900 dark:bg-slate-800 text-white">
+                <span className="text-[14px] font-black tabular-nums whitespace-nowrap">{new Date(sl.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                <span className="flex-1 min-w-0 text-[10px] font-semibold text-white/75 truncate">{sl.games.join(" · ")}</span>
+                <span className="text-[10px] font-extrabold text-white/75 whitespace-nowrap">{sl.picks.length} {sl.picks.length === 1 ? "prop" : "props"}</span>
+              </div>
+              {sl.picks.length > 0 ? (<>
+                <div className="flex items-center gap-1 px-3 py-1 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800 text-[9px] font-extrabold tracking-widest text-slate-400 uppercase">
+                  <span className="flex-1">Player</span><span className="w-10 text-center">Line</span><span className="w-10 text-center">L5</span><span className="w-11 text-center">L10</span><span className="w-[50px] text-center">Season</span>
+                </div>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">{sl.picks.map((k) => renderRow(k.r, k.x, k.Lp, k.tags))}</div>
+              </>) : <div className="text-center text-[11px] text-slate-400 py-3 px-3">No {label.toLowerCase()} prop clears the bar in {sl.games.length === 1 ? "this game" : "these games"}.</div>}
             </div>
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">{picks.map((k) => renderRow(k.r, k.x, k.Lp, k.tags))}</div>
-          </div>
+          ))
         ) : (
           <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 text-center text-xs text-slate-400">{blocks.some((x) => !x.live) ? `No ${label.toLowerCase()} prop clears the bar for these games.` : "No games left to tip off on this day."}</div>
         )}
-        <div className="text-[9px] text-slate-400 px-1 mt-2 leading-snug">On the sheet: hit the line in 80% or more of his games this season and 70% or more of his last 10, at least 5 games, 18+ minutes a night. Players ruled out are left off. Order is by season and last-10 rate, moved up for a great matchup and down for a tough matchup, a back-to-back, or falling minutes. Great / Tough is how much the opponent allows in that stat. Tap a player for the lines around his and the break-even price.</div>
+        <div className="text-[9px] text-slate-400 px-1 mt-2 leading-snug">On the sheet: hit the line in 80% or more of his games this season and 70% or more of his last 10, at least 5 games, 18+ minutes a night. Players ruled out are left off. Games are grouped by tip-off time. Inside each group the order is by season and last-10 rate, moved up for a great matchup and down for a tough matchup, a back-to-back, or falling minutes. Great / Tough is how much the opponent allows in that stat. Tap a player for the lines around his and the break-even price.</div>
       </div>
     );
   }
